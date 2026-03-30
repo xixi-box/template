@@ -1,0 +1,18 @@
+# /etc/systemd/system/frps.service
+[Unit]
+Description=FRP Server Daemon (Gateway Node)
+Documentation=https://gofrp.org
+After=network.target syslog.target
+Wants=network.target
+
+[Service]
+Type=simple
+# 进程宕机后自动重启策略
+Restart=on-failure
+RestartSec=5s
+# 【注意】请将下面的路径替换为你服务器上 frps 二进制文件和配置文件的绝对路径
+ExecStart=/opt/frp/frps -c /opt/frp/frps.toml
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

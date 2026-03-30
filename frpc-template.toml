@@ -1,0 +1,57 @@
+# ============================================================
+# FRP Client Configuration (frpc.toml)
+# Deployment Node: Edge Compute Node (e.g., WSL, Local Server)
+# ============================================================
+
+# [1] 服务端连接配置 (Server Connection)
+serverAddr = "114.xxx.xxx.xxx"      # 云服务器的真实公网 IP
+serverPort = 7000                   # 必须与 frps.toml 的 bindPort 保持一致
+
+# [2] 鉴权与安全通信 (Authentication & Transport)
+auth.method = "token"
+auth.token = "ENTERPRISE_SECURE_TOKEN_2026_REPLACE_ME"
+transport.tls.enable = true         # 【关键安全配置】开启 TLS 链路加密，防止流量在传输过程中被深度包检测 (DPI) 拦截
+transport.tcpMux = true             # 必须与服务端保持一致
+
+# [3] 本地客户端管理面板 (可选)
+# 用于本地查看穿透状态：http://127.0.0.1:7400
+webServer.addr = "127.0.0.1"
+webServer.port = 7400
+webServer.user = "admin"
+webServer.password = "admin"
+
+# ============================================================
+# Proxies Rules (流量转发路由表)
+# ============================================================
+
+# 路由 1：前端门户服务 (Frontend Portfolio)
+[[proxies]]
+name = "web-portfolio"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 80                      # 本地微服务暴露的端口
+remotePort = 80                     # 映射到云服务器的公网端口
+
+# 路由 2：后台监控面板 (Lumina Dashboard)
+[[proxies]]
+name = "svc-lumina-dashboard"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3000
+remotePort = 3000
+
+# 路由 3：核心业务网关 (Code Craft Gateway)
+[[proxies]]
+name = "svc-code-craft-gateway"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8888
+remotePort = 8888
+
+# 示例：如果要穿透本地的 MySQL 给云端其他节点临时使用，可以这样配
+# [[proxies]]
+# name = "db-mysql-debug"
+# type = "tcp"
+# localIP = "127.0.0.1"
+# localPort = 3306
+# remotePort = 33060                  # 映射到外网的安全端口（用完记得关闭）

@@ -1,0 +1,19 @@
+# /etc/systemd/system/frpc.service
+[Unit]
+Description=FRP Client Daemon (Edge Compute Node)
+Documentation=https://gofrp.org
+After=network.target syslog.target
+Wants=network.target
+
+[Service]
+Type=simple
+# 若是在 WSL 中，指定运行用户可避免 root 权限滥用
+User=wangshun
+Restart=on-failure
+RestartSec=5s
+# 【注意】请将下面的路径替换为你本地 WSL 上 frpc 二进制文件和配置文件的绝对路径
+ExecStart=/home/wangshun/frp/frpc -c /home/wangshun/frp/frpc.toml
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

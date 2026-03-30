@@ -1,0 +1,28 @@
+# ============================================================
+# FRP Server Configuration (frps.toml)
+# Deployment Node: Public Cloud Gateway (e.g., Aliyun ECS)
+# ============================================================
+
+# [1] 基础通信配置 (Base Network)
+bindPort = 7000                     # FRP 客户端与服务端的主通信端口
+kcpBindPort = 7000                  # 开启 KCP 协议支持（弱网环境下降低延迟，与 bindPort 一致即可）
+
+# [2] 鉴权与安全 (Authentication & Security)
+auth.method = "token"
+auth.token = "ENTERPRISE_SECURE_TOKEN_2026_REPLACE_ME" # 强烈建议使用长随机字符串
+
+# [3] 服务端运维面板 (Dashboard - 强烈建议开启)
+# 开启后，可通过 http://云服务器IP:7500 实时监控各通道的流量和在线状态
+webServer.addr = "0.0.0.0"
+webServer.port = 7500
+webServer.user = "admin"            # 面板登录账号
+webServer.password = "admin123456"  # 面板登录密码
+
+# [4] 性能与限制优化 (Performance & Limits)
+transport.maxPoolCount = 100        # 每个代理允许的最大连接池数量（默认 5，高并发业务建议调大）
+transport.tcpMux = true             # 开启 TCP 多路复用（降低连接建立的延迟）
+
+# [5] 日志配置 (Logging)
+log.to = "./frps.log"               # 日志文件路径
+log.level = "info"                  # 日志级别：trace, debug, info, warn, error
+log.maxDays = 3                     # 日志保留天数
