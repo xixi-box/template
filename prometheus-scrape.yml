@@ -1,0 +1,38 @@
+# ============================================================
+# Prometheus 采集配置模板
+# 适用: Spring Boot Actuator + Prometheus + Grafana 监控栈
+# 来源: gpu-reserve/prometheus.yml
+#
+# 使用方式:
+#   1. 复制到项目根目录: prometheus.yml
+#   2. docker-compose.dev.yml 中挂载: ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+#   3. 访问 http://localhost:9090 验证
+# ============================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # --- Spring Boot 应用 ---
+  # host.docker.internal: WSL/Docker Desktop 环境访问宿主机
+  # 物理机部署: 替换为实际 IP 或服务名
+  - job_name: '<project>-app'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['host.docker.internal:<app-port>']
+        labels:
+          application: '<project>'
+
+  # --- [可选] 多个 Spring Boot 服务 ---
+  # - job_name: '<project>-user-service'
+  #   metrics_path: '/api/actuator/prometheus'
+  #   static_configs:
+  #     - targets: ['host.docker.internal:8124']
+  #       labels:
+  #         application: '<project>-user'
+
+  # --- Prometheus 自身 ---
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

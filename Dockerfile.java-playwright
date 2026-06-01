@@ -1,0 +1,42 @@
+# ============================================================
+# Playwright 浏览器自动化服务 Dockerfile 模板
+# 适用: 需要无头浏览器的 Java 服务 (网页截图、E2E 测试等)
+# 来源: code-craft/Dockerfile.prod-screenshot
+#
+# 注意:
+#   - 基础镜像 ~1.5GB (含 Chromium)，构建较慢
+#   - 需要 shm_size: 512mb (docker-compose 中设置)
+#   - 非 Alpine，使用 Ubuntu Noble + glibc
+# ============================================================
+
+FROM mcr.microsoft.com/playwright/java:v1.49.0-noble
+
+WORKDIR /app
+
+# Playwright 官方镜像已包含浏览器运行依赖
+# 不要执行 apt-get，避免构建时因 Ubuntu apt 源波动导致失败
+
+# 创建非root用户 (Ubuntu 用 groupadd/useradd，非 addgroup/adduser)
+RUN groupadd -r <app-user> && useradd -r -g <app-user> <app-user>
+
+# 创建必要目录
+RUN mkdir -p /tmp/<work-dir> /logs /home/<app-user>/.dubbo && \
+    chown -R <app-user>:<app-user> /tmp/<work-dir> /logs /home/<app-user>
+
+USER <app-user>:<app-user>
+
+# 复制构建产物
+COPY <your-service>.jar app.jar
+
+ENV SPRING_PROFILES_ACTIVE=docker
+ENV JAVA_OPTS="-Xmx512m -Xms256m -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
+# 业务环境变量按需添加
+# ENV DB_HOST=mysql
+# ENV REDIS_HOST=redis
+
+EXPOSE <port>
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:<port>/actuator/health || exit 1
+
+ENTRYPOINT ["sh", "-c", "java ${JAVA_OPTS} -jar app.jar"]

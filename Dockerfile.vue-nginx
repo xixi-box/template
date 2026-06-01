@@ -1,0 +1,47 @@
+# ============================================================
+# Vue SPA + Nginx Dockerfile 模板 (生产运行时)
+# 适用: Vue/React 等前端 SPA 项目
+# 来源: code-craft + interview + lumina-rpc 三项目合并
+#
+# 使用方式:
+#   方案A (推荐): CI 先执行 pnpm build，再 COPY dist 到镜像
+#   方案B: 多阶段构建，Docker 内完成 npm install + build
+# ============================================================
+
+# ---- 方案A: 纯运行时 (推荐，CI 构建产物传入) ----
+FROM nginx:alpine
+
+# 复制构建好的静态文件
+COPY dist /usr/share/nginx/html
+
+# 复制 nginx 配置
+# - 纯静态SPA: 用 nginx-spa-static.conf 模板
+# - 反向代理:  用 nginx-spa-proxy.conf 模板
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# 清理 Nginx 默认页面
+RUN rm -f /usr/share/nginx/html/index.html /usr/share/nginx/html/50x.html
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:80/ || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]
+
+
+# ---- 方案B: 多阶段构建 (CI 环境无 Node 时使用) ----
+# 取消下方注释，删除方案A 内容
+#
+# FROM node:20-alpine AS builder
+# WORKDIR /app
+# COPY package.json pnpm-lock.yaml ./
+# RUN npm install -g pnpm && pnpm install --frozen-lockfile
+# COPY . .
+# RUN pnpm build
+#
+# FROM nginx:alpine
+# COPY --from=builder /app/dist /usr/share/nginx/html
+# COPY nginx.conf /etc/nginx/conf.d/default.conf
+# EXPOSE 80
+# CMD ["nginx", "-g", "daemon off;"]

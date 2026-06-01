@@ -27,6 +27,35 @@ env:
 
 jobs:
   # ==========================================
+  # [可选] Stage 0: Resolve Deploy Context
+  # 适用: 需要支持多分支部署 (如 main/edu/springaialibaba)
+  # 单分支项目可删除此 job，直接在 build-and-push 中使用 github.ref_name
+  # ==========================================
+  # resolve-context:
+  #   name: Resolve Deploy Context
+  #   runs-on: ubuntu-latest
+  #   outputs:
+  #     deploy_ref: ${{ steps.resolve.outputs.deploy_ref }}
+  #     branch_slug: ${{ steps.resolve.outputs.branch_slug }}
+  #     target_env: ${{ steps.resolve.outputs.target_env }}
+  #   steps:
+  #     - name: Resolve branch and target environment
+  #       id: resolve
+  #       shell: bash
+  #       run: |
+  #         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+  #           DEPLOY_REF="${{ github.event.inputs.deploy_ref || 'main' }}"
+  #           TARGET_ENV="${{ github.event.inputs.target_env || 'aliyun' }}"
+  #         else
+  #           DEPLOY_REF="${{ github.ref_name }}"
+  #           TARGET_ENV="aliyun"
+  #         fi
+  #         BRANCH_SLUG=$(echo "${DEPLOY_REF}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')
+  #         echo "deploy_ref=${DEPLOY_REF}" >> "$GITHUB_OUTPUT"
+  #         echo "branch_slug=${BRANCH_SLUG}" >> "$GITHUB_OUTPUT"
+  #         echo "target_env=${TARGET_ENV}" >> "$GITHUB_OUTPUT"
+
+  # ==========================================
   # Stage 1: Build & Push (Cloud Build Node)
   # ==========================================
   build-and-push:
@@ -53,19 +82,54 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Generate Immutable Version Tag
         id: generate_version
         # 截取 Git Commit Hash 的前 7 位作为版本号，确保镜像不可变且可追溯
         run: echo "VERSION=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
 
-      - name: Build and Push Artifacts
-        run: |
-          VERSION=${{ steps.generate_version.outputs.VERSION }}
-          echo "Building images for version: $VERSION"
-          
-          # [示例] 业务应用镜像构建指令
-          # docker build -f Dockerfile.app -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}:app-service-$VERSION -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}:app-service-latest .
-          # docker push --all-tags ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}
+      # ============================================================
+      # 方案A (推荐): build-push-action + GHA 缓存
+      # 优点: 自动层缓存，多服务并行构建快
+      # ============================================================
+      - name: Build and Push App Service
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.prod-app
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}:app-service-latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}:app-service-${{ steps.generate_version.outputs.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 按需复制更多服务构建步骤，替换 file / tags 中的服务名
+      # - name: Build and Push User Service
+      #   uses: docker/build-push-action@v5
+      #   with:
+      #     context: .
+      #     file: ./Dockerfile.prod-user
+      #     push: true
+      #     tags: |
+      #       ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}:user-service-latest
+      #       ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}:user-service-${{ steps.generate_version.outputs.VERSION }}
+      #     cache-from: type=gha
+      #     cache-to: type=gha,mode=max
+
+      # ============================================================
+      # 方案B (备选): 手动 docker build
+      # 适用: 需要细粒度控制构建参数的场景
+      # ============================================================
+      # - name: Build and Push App Service
+      #   run: |
+      #     VERSION=${{ steps.generate_version.outputs.VERSION }}
+      #     docker build -f Dockerfile.prod-app \
+      #       -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}:app-service-latest \
+      #       -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}:app-service-$VERSION .
+      #     docker push --all-tags ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}
 
   # ==========================================
   # Stage 2: Deploy (Target Edge/Cloud Node)

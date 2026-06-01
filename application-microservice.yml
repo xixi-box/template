@@ -1,0 +1,117 @@
+# ============================================================
+# Spring Boot 微服务 application.yml 模板
+# 适用: Spring Boot 3.x + Spring Cloud Alibaba / 自研 RPC 项目
+# 来源: code-craft (×3) + lumina-rpc (×5) 共 8 个文件合并
+#
+# 使用方式:
+#   1. 复制到 src/main/resources/application.yml
+#   2. 替换所有 <占位符> 和 ${VAR:default} 中的默认值
+#   3. 生产环境通过 docker run -e 或 .env 覆盖
+#   4. 敏感信息严禁写默认值，必须通过环境变量注入
+# ============================================================
+
+spring:
+  application:
+    name: <your-service-name>
+
+  # --- 数据源 ---
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:<project>_db}?serverTimezone=Asia/Shanghai&useLegacyDatetimeCode=false&useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+
+  # --- Redis ---
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: 0
+      password: ${REDIS_PASSWORD:}
+      # Lettuce 连接池 (按需调整)
+      # lettuce:
+      #   pool:
+      #     max-active: 8
+      #     max-idle: 8
+      #     min-idle: 2
+
+  # --- [可选] Spring Session Redis ---
+  # session:
+  #   store-type: redis
+  #   timeout: 2592000
+
+server:
+  port: <your-port>
+  servlet:
+    context-path: /api
+    # session:
+    #   cookie:
+    #     max-age: 2592000
+
+# ============================================================
+# [可选A] Dubbo + Nacos (Spring Cloud Alibaba 微服务)
+# 不使用 Dubbo 的项目删除此块
+# ============================================================
+# dubbo:
+#   registry:
+#     address: nacos://${NACOS_HOST:localhost}:${NACOS_PORT:8848}?username=${NACOS_USERNAME:nacos}&password=${NACOS_PASSWORD:}
+#     register-mode: instance
+#   protocol:
+#     name: tri
+#     port: <dubbo-port>
+#     host: ${DUBBO_HOST:localhost}
+#   consumer:
+#     timeout: 60000
+#   provider:
+#     timeout: 60000
+#     executor: virtual-thread
+
+# ============================================================
+# [可选B] 自研 RPC 框架配置 (如 Lumina-RPC)
+# ============================================================
+# <your-rpc>:
+#   rpc:
+#     consumer:
+#       enabled: ${RPC_CONSUMER_ENABLED:false}
+#     provider:
+#       enabled: ${RPC_PROVIDER_ENABLED:true}
+#     control-plane-url: ${RPC_CONTROL_PLANE_URL:http://localhost:8080}
+#     server:
+#       host: ${RPC_SERVER_HOST:127.0.0.1}
+#       port: <rpc-port>
+#     service:
+#       scan-packages: <your.base.package>.service
+
+# ============================================================
+# Actuator + Prometheus (推荐所有服务开启)
+# ============================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+# ============================================================
+# [可选] OpenAPI 文档
+# ============================================================
+# springdoc:
+#   group-configs:
+#     - group: 'default'
+#       packages-to-scan: <your.base.package>.controller
+#
+# knife4j:
+#   enable: true
+#   setting:
+#     language: zh_cn
+
+# ============================================================
+# 日志
+# ============================================================
+logging:
+  level:
+    <your.base.package>: ${LOG_LEVEL:INFO}
+  # pattern:
+  #   console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

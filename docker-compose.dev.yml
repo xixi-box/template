@@ -1,0 +1,219 @@
+# ============================================================
+# 本地开发环境 Docker Compose 模板
+# 适用: Spring Boot + Vue 前后端分离项目
+# 来源: code-craft + lumina-rpc + gpu-reserve 三项目合并
+#
+# 设计原则:
+#   - 只启动基础设施 (MySQL/Redis/Nacos 等)，Java 服务在 IDE 中运行
+#   - 所有密码通过 .env 或环境变量注入，禁止硬编码
+#   - 每个 service 都有 healthcheck，保证启动顺序
+#
+# 使用方式:
+#   1. 复制到项目根目录: docker-compose.dev.yml
+#   2. 复制 .env.example → .env 并填入实际值
+#   3. docker compose -f docker-compose.dev.yml up -d
+# ============================================================
+
+services:
+  # ============================================================
+  # MySQL 8.0
+  # ============================================================
+  mysql:
+    image: mysql:8.0
+    container_name: <project>-mysql
+    hostname: <project>-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${<PROJECT>_MYSQL_ROOT_PASSWORD:?set <PROJECT>_MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${<PROJECT>_MYSQL_DATABASE:-<project>_db}
+      MYSQL_USER: ${<PROJECT>_MYSQL_USERNAME:-<project>_user}
+      MYSQL_PASSWORD: ${<PROJECT>_MYSQL_PASSWORD:?set <PROJECT>_MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "${<PROJECT>_MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # [可选] 挂载初始化 SQL
+      # - ./sql/init.sql:/docker-entrypoint-initdb.d/1_init.sql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    networks:
+      - <project>-network
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ============================================================
+  # Redis 7
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: <project>-redis
+    restart: unless-stopped
+    ports:
+      - "${<PROJECT>_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    # 如需持久化: command: redis-server --appendonly yes
+    networks:
+      - <project>-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # [可选] Nacos 服务发现 & 配置中心
+  # 适用: Spring Cloud Alibaba / Dubbo 项目
+  # 不需要的项目直接删除此块
+  # ============================================================
+  # nacos-db-init:
+  #   image: mysql:8.0
+  #   container_name: <project>-nacos-db-init
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: ${<PROJECT>_MYSQL_ROOT_PASSWORD:?set <PROJECT>_MYSQL_ROOT_PASSWORD}
+  #   volumes:
+  #     - ./sql/nacos-schema.sql:/docker-entrypoint-initdb.d/nacos_schema.sql
+  #   networks:
+  #     - <project>-network
+  #   restart: "no"
+  #   command: >
+  #     sh -c "
+  #       echo 'Waiting for MySQL...';
+  #       until mysql -h mysql -uroot -p$${MYSQL_ROOT_PASSWORD} -e 'SELECT 1' 2>/dev/null; do
+  #         sleep 2;
+  #       done;
+  #       echo 'MySQL is ready, executing init scripts...';
+  #       mysql -h mysql -uroot -p$${MYSQL_ROOT_PASSWORD} < /docker-entrypoint-initdb.d/nacos_schema.sql;
+  #       echo 'Initialization completed, exiting...'
+  #     "
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+
+  # nacos:
+  #   image: nacos/nacos-server:v2.5.2
+  #   container_name: <project>-nacos
+  #   environment:
+  #     JAVA_TOOL_OPTIONS: "-Xmx4g -Xms2g -Xss4m"
+  #     MODE: standalone
+  #     SPRING_DATASOURCE_PLATFORM: mysql
+  #     MYSQL_SERVICE_HOST: mysql
+  #     MYSQL_SERVICE_PORT: 3306
+  #     MYSQL_SERVICE_DB_NAME: nacos
+  #     MYSQL_SERVICE_USER: ${<PROJECT>_MYSQL_USERNAME:-nacos}
+  #     MYSQL_SERVICE_PASSWORD: ${<PROJECT>_MYSQL_PASSWORD:?set <PROJECT>_MYSQL_PASSWORD}
+  #     NACOS_AUTH_ENABLE: "false"
+  #     NACOS_AUTH_USERNAME: ${<PROJECT>_NACOS_USERNAME:-nacos}
+  #     NACOS_AUTH_PASSWORD: ${<PROJECT>_NACOS_PASSWORD:?set <PROJECT>_NACOS_PASSWORD}
+  #   ports:
+  #     - "8848:8848"
+  #     - "9848:9848"
+  #   volumes:
+  #     - nacos-logs:/home/nacos/logs
+  #     - nacos-data:/home/nacos/data
+  #   networks:
+  #     - <project>-network
+  #   restart: unless-stopped
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #     nacos-db-init:
+  #       condition: service_completed_successfully
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/v1/ns/instance/list?serviceName=nacos"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
+
+  # ============================================================
+  # [可选] Kafka (KRaft 模式，无需 ZooKeeper)
+  # 适用: 需要消息队列的项目
+  # ============================================================
+  # kafka:
+  #   image: apache/kafka:3.7.0
+  #   container_name: <project>-kafka
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9092:9092"
+  #   environment:
+  #     KAFKA_NODE_ID: 1
+  #     KAFKA_PROCESS_ROLES: broker,controller
+  #     KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+  #     KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+  #     KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  #     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  #     KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+  #     KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+  #     KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  #     CLUSTER_ID: MkU3PEVBZVCp2CH5ZzKJfQ
+  #   networks:
+  #     - <project>-network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+
+  # ============================================================
+  # [可选] Prometheus + Grafana 监控
+  # ============================================================
+  # prometheus:
+  #   image: prom/prometheus:v2.45.0
+  #   container_name: <project>-prometheus
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus-data:/prometheus
+  #   networks:
+  #     - <project>-network
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+
+  # grafana:
+  #   image: grafana/grafana:10.2.0
+  #   container_name: <project>-grafana
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3030:3000"
+  #   environment:
+  #     GF_SECURITY_ADMIN_PASSWORD: ${<PROJECT>_GRAFANA_PASSWORD:-admin123}
+  #   volumes:
+  #     - grafana-data:/var/lib/grafana
+  #   networks:
+  #     - <project>-network
+  #   depends_on:
+  #     - prometheus
+
+# ============================================================
+# Volumes
+# ============================================================
+volumes:
+  mysql-data:
+    name: <project>-dev-mysql-data
+  redis-data:
+    name: <project>-dev-redis-data
+  # nacos-logs:
+  #   name: <project>-dev-nacos-logs
+  # nacos-data:
+  #   name: <project>-dev-nacos-data
+  # prometheus-data:
+  # grafana-data:
+
+# ============================================================
+# Networks
+# ============================================================
+networks:
+  <project>-network:
+    driver: bridge
+    name: <project>-dev-network

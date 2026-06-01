@@ -1,0 +1,50 @@
+# ============================================================
+# Spring Boot Java 服务多阶段构建 Dockerfile 模板
+# 适用: CI 环境无 Maven 时，在 Docker 内完成编译+运行
+# 来源: code-craft/Dockerfile.user
+#
+# 与 Dockerfile.java-service 的区别:
+#   - java-service: CI 先构建 JAR，Docker 只负责运行 (推荐)
+#   - 本模板: Docker 内完成 Maven 编译 → JRE 运行 (CI 无构建能力时使用)
+# ============================================================
+
+# ---- 阶段1: Maven 构建 ----
+FROM maven:3.9-eclipse-temurin-21 AS builder
+
+WORKDIR /app
+
+# 优化: 先复制 POM，利用 Docker 层缓存加速依赖下载
+# COPY pom.xml .
+# RUN mvn dependency:go-offline -B
+
+# 复制完整项目源码
+COPY . .
+
+# [必改] 构建指定模块 (-pl 指定模块, -am 同时构建依赖)
+RUN mvn clean package -pl <your-module> -am -DskipTests
+
+# ---- 阶段2: JRE 运行时 ----
+FROM eclipse-temurin:21-jre-alpine
+
+WORKDIR /app
+
+RUN addgroup -S <app-user> && adduser -S <app-user> -G <app-user>
+
+RUN mkdir -p /logs /app/config && \
+    chown -R <app-user>:<app-user> /app /logs
+
+USER <app-user>:<app-user>
+
+# [必改] 从构建阶段复制 JAR
+COPY --from=builder /app/<your-module>/target/*.jar app.jar
+
+ENV SPRING_PROFILES_ACTIVE=docker
+ENV JAVA_OPTS="-Xmx512m -Xms256m -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
+
+# [必改] 暴露端口
+EXPOSE <port>
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:<port>/actuator/health || exit 1
+
+ENTRYPOINT ["sh", "-c", "java ${JAVA_OPTS} -jar app.jar"]
