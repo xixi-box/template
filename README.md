@@ -48,7 +48,7 @@
 
 | 模板 | 说明 |
 |------|------|
-| [deploy-template.yml](deploy-template.yml) | GitHub Actions 构建部署流水线（ACR 推送 + Self-hosted Runner + IaC Compose 生成 + 分阶段健康检查启动） |
+| [deploy-template.yml](deploy-template.yml) | GitHub Actions 双推 GHCR/ACR；Self-hosted Runner 默认拉取 GHCR，失败时回退 ACR，并使用 IaC Compose 分阶段启动 |
 
 ## 🕳️ FRP 内网穿透
 
