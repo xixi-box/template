@@ -279,4 +279,30 @@ jobs:
             up -d --remove-orphans app
           docker compose --project-name "$PROJECT_NAME" --profile "$DATABASE_ENGINE" ps
 
+          cleanup_repository_images() {
+            local repository="$1"
+            local current_ref="$2"
+            local stale_refs=()
+
+            mapfile -t stale_refs < <(
+              docker image ls "$repository" --format '{{.Repository}}:{{.Tag}}' |
+                grep -Fvx "$current_ref" |
+                grep -v ':<none>$' |
+                sort -u || true
+            )
+
+            if (( ${#stale_refs[@]} > 0 )); then
+              printf 'Removing old project images from %s:\n' "$repository"
+              printf '  %s\n' "${stale_refs[@]}"
+              docker image rm -f "${stale_refs[@]}"
+            fi
+          }
+
+          # Keep the running immutable SHA only. Repository matching and the OCI
+          # source label scope cleanup to this project on a shared Docker host.
+          cleanup_repository_images "$GHCR_REPOSITORY" "$IMAGE_REPOSITORY:$IMAGE_TAG"
+          cleanup_repository_images "$ACR_REPOSITORY" "$IMAGE_REPOSITORY:$IMAGE_TAG"
+          docker image prune -f \
+            --filter "label=org.opencontainers.image.source=https://github.com/${{ github.repository }}"
+
           echo "Deployment completed: $IMAGE_REPOSITORY:$IMAGE_TAG"
