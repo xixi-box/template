@@ -71,7 +71,7 @@ done
 
 log "Start local Docker services"
 cd "$PROJECT_ROOT"
-docker_compose -f "$COMPOSE_FILE" up -d
+docker_compose up -d
 
 log "Running project containers"
 docker ps --filter "name=$PROJECT_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"

@@ -1,357 +1,282 @@
-name: Enterprise CI/CD Pipeline Template
+name: Build and Deploy
 
 on:
-  # 日常开发阶段建议保持注释，依赖手动触发以控制发版频率
-  # push:
-  #   branches: [ main, master, release/* ]
   workflow_dispatch:
     inputs:
       target_env:
-        description: 'Target Deployment Environment (e.g., aliyun, wsl, prod, staging)'
+        description: Target deployment environment / self-hosted runner label
         required: true
-        default: 'aliyun'
+        default: aliyun
         type: choice
         options:
           - aliyun
           - wsl
+      database:
+        description: Production database engine
+        required: true
+        default: mysql
+        type: choice
+        options:
+          - mysql
+          - postgres
 
-permissions:
-  contents: read
-  packages: write
+# Required repository or organization configuration:
+#   Variables: ALIYUN_ACR_REGISTRY, ALIYUN_ACR_USERNAME
+#   Secrets:   ALIYUN_ACR_PASSWORD, DATABASE_PASSWORD, REDIS_PASSWORD
+#              DATABASE_ROOT_PASSWORD (required when MySQL is selected)
+# Optional repository variables:
+#   ALIYUN_ACR_IMAGE_NAME - defaults to wangshun_build/<repository>
+#   DEPLOY_DOCKERFILE     - defaults to ./Dockerfile
+#   DATABASE_NAME         - defaults to app
+#   DATABASE_USERNAME     - defaults to app
+#   APP_PORT              - defaults to 8080
 
 env:
-  # ==========================================
-  # Global Configuration (Single Source of Truth)
-  # ==========================================
-  PROJECT_NAME: enterprise-microservice          # 项目统一标识，用于容器命名前缀与网络隔离
   GHCR_REGISTRY: ghcr.io
-  GHCR_IMAGE_NAME: ${{ github.repository_owner }}/${{ github.event.repository.name }}
-  ACR_REGISTRY: crpi-r1wme86kfaw7rr3f.cn-shanghai.personal.cr.aliyuncs.com
-  ACR_IMAGE_NAME: wangshun_build/microservices  # ACR 命名空间/仓库
-  
-  # 注意：涉及密码、密钥等敏感信息，必须通过 ${{ secrets.XXX }} 引用，严禁硬编码
+  GHCR_IMAGE_NAME: ${{ github.repository }}
+  ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
+  ALIYUN_ACR_USERNAME: ${{ vars.ALIYUN_ACR_USERNAME }}
+  ALIYUN_ACR_IMAGE_NAME: ${{ vars.ALIYUN_ACR_IMAGE_NAME || format('wangshun_build/{0}', github.event.repository.name) }}
+  DEPLOY_DOCKERFILE: ${{ vars.DEPLOY_DOCKERFILE || './Dockerfile' }}
+  DATABASE_NAME: ${{ vars.DATABASE_NAME || 'app' }}
+  DATABASE_USERNAME: ${{ vars.DATABASE_USERNAME || 'app' }}
+  APP_PORT: ${{ vars.APP_PORT || '8080' }}
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  # ==========================================
-  # [可选] Stage 0: Resolve Deploy Context
-  # 适用: 需要支持多分支部署 (如 main/edu/springaialibaba)
-  # 单分支项目可删除此 job，直接在 build-and-push 中使用 github.ref_name
-  # ==========================================
-  # resolve-context:
-  #   name: Resolve Deploy Context
-  #   runs-on: ubuntu-latest
-  #   outputs:
-  #     deploy_ref: ${{ steps.resolve.outputs.deploy_ref }}
-  #     branch_slug: ${{ steps.resolve.outputs.branch_slug }}
-  #     target_env: ${{ steps.resolve.outputs.target_env }}
-  #   steps:
-  #     - name: Resolve branch and target environment
-  #       id: resolve
-  #       shell: bash
-  #       run: |
-  #         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-  #           DEPLOY_REF="${{ github.event.inputs.deploy_ref || 'main' }}"
-  #           TARGET_ENV="${{ github.event.inputs.target_env || 'aliyun' }}"
-  #         else
-  #           DEPLOY_REF="${{ github.ref_name }}"
-  #           TARGET_ENV="aliyun"
-  #         fi
-  #         BRANCH_SLUG=$(echo "${DEPLOY_REF}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')
-  #         echo "deploy_ref=${DEPLOY_REF}" >> "$GITHUB_OUTPUT"
-  #         echo "branch_slug=${BRANCH_SLUG}" >> "$GITHUB_OUTPUT"
-  #         echo "target_env=${TARGET_ENV}" >> "$GITHUB_OUTPUT"
-
-  # ==========================================
-  # Stage 1: Build & Push (Cloud Build Node)
-  # ==========================================
   build-and-push:
-    name: Build and Push Images
+    name: Build and Push Image
     runs-on: ubuntu-latest
-    outputs:
-      VERSION: ${{ steps.generate_version.outputs.VERSION }}
+    permissions:
+      contents: read
+      packages: write
 
     steps:
-      - name: Checkout Source Code
+      - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Setup Build Environment (JDK & Node.js)
-        # 根据实际技术栈保留相应的 Setup 动作
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-          
-      - name: Login to GHCR
+      - name: Validate build configuration
+        shell: bash
+        env:
+          ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          [[ -n "$ALIYUN_ACR_REGISTRY" ]] || missing+=(ALIYUN_ACR_REGISTRY)
+          [[ -n "$ALIYUN_ACR_USERNAME" ]] || missing+=(ALIYUN_ACR_USERNAME)
+          [[ -n "$ALIYUN_ACR_PASSWORD" ]] || missing+=(ALIYUN_ACR_PASSWORD)
+          [[ -n "$ALIYUN_ACR_IMAGE_NAME" ]] || missing+=(ALIYUN_ACR_IMAGE_NAME)
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing GitHub Actions configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+          if [[ ! -f "$DEPLOY_DOCKERFILE" ]]; then
+            echo "Dockerfile not found: $DEPLOY_DOCKERFILE" >&2
+            exit 1
+          fi
+
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Login to Aliyun ACR
+      - name: Log in to Aliyun ACR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.ACR_REGISTRY }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          registry: ${{ env.ALIYUN_ACR_REGISTRY }}
+          username: ${{ env.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
 
-      - name: Setup Docker Buildx
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Immutable Version Tag
-        id: generate_version
-        # 截取 Git Commit Hash 的前 7 位作为版本号，确保镜像不可变且可追溯
-        run: echo "VERSION=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
-
-      # ============================================================
-      # 方案A (推荐): build-push-action + GHA 缓存
-      # 优点: 自动层缓存，多服务并行构建快
-      # ============================================================
-      - name: Build and Push App Service
-        uses: docker/build-push-action@v5
+      - name: Build and push image to both registries
+        uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.prod-app
+          file: ${{ env.DEPLOY_DOCKERFILE }}
           push: true
           tags: |
-            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:app-service-latest
-            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:app-service-${{ steps.generate_version.outputs.VERSION }}
-            ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE_NAME }}:app-service-latest
-            ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE_NAME }}:app-service-${{ steps.generate_version.outputs.VERSION }}
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:latest
+            ${{ env.ALIYUN_ACR_REGISTRY }}/${{ env.ALIYUN_ACR_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.ALIYUN_ACR_REGISTRY }}/${{ env.ALIYUN_ACR_IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 按需复制更多服务构建步骤，替换 file / tags 中的服务名
-      # - name: Build and Push User Service
-      #   uses: docker/build-push-action@v5
-      #   with:
-      #     context: .
-      #     file: ./Dockerfile.prod-user
-      #     push: true
-      #     tags: |
-      #       ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:user-service-latest
-      #       ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:user-service-${{ steps.generate_version.outputs.VERSION }}
-      #       ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE_NAME }}:user-service-latest
-      #       ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE_NAME }}:user-service-${{ steps.generate_version.outputs.VERSION }}
-      #     cache-from: type=gha
-      #     cache-to: type=gha,mode=max
-
-      # ============================================================
-      # 方案B (备选): 手动 docker build
-      # 适用: 需要细粒度控制构建参数的场景
-      # ============================================================
-      # - name: Build and Push App Service
-      #   run: |
-      #     VERSION=${{ steps.generate_version.outputs.VERSION }}
-      #     docker build -f Dockerfile.prod-app \
-      #       -t ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:app-service-latest \
-      #       -t ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:app-service-$VERSION \
-      #       -t ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE_NAME }}:app-service-latest \
-      #       -t ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE_NAME }}:app-service-$VERSION .
-      #     docker push --all-tags ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}
-      #     docker push --all-tags ${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE_NAME }}
-
-  # ==========================================
-  # Stage 2: Deploy (Target Edge/Cloud Node)
-  # ==========================================
   deploy:
-    name: Deploy to ${{ github.event.inputs.target_env || 'aliyun' }}
+    name: Deploy to ${{ github.event.inputs.target_env }}
     needs: build-and-push
-    # 动态节点调度：根据触发参数将任务路由至指定标签的 Self-hosted Runner
-    runs-on: [self-hosted, "${{ github.event.inputs.target_env || 'aliyun' }}"]
+    runs-on: [self-hosted, "${{ github.event.inputs.target_env }}"]
+    environment: ${{ github.event.inputs.target_env }}
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ github.event.inputs.target_env }}
+      cancel-in-progress: false
     env:
-      VERSION: ${{ needs.build-and-push.outputs.VERSION }}
+      DATABASE_ENGINE: ${{ github.event.inputs.database }}
+      ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+      DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+      DATABASE_ROOT_PASSWORD: ${{ secrets.DATABASE_ROOT_PASSWORD }}
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
 
     steps:
-      - name: Resolve deployment image repository
+      - name: Deploy with GHCR primary and Aliyun ACR fallback
         shell: bash
         run: |
+          set -euo pipefail
+
+          missing=()
+          [[ -n "$ALIYUN_ACR_REGISTRY" ]] || missing+=(ALIYUN_ACR_REGISTRY)
+          [[ -n "$ALIYUN_ACR_USERNAME" ]] || missing+=(ALIYUN_ACR_USERNAME)
+          [[ -n "$ALIYUN_ACR_PASSWORD" ]] || missing+=(ALIYUN_ACR_PASSWORD)
+          [[ -n "$ALIYUN_ACR_IMAGE_NAME" ]] || missing+=(ALIYUN_ACR_IMAGE_NAME)
+          [[ -n "$DATABASE_PASSWORD" ]] || missing+=(DATABASE_PASSWORD)
+          [[ -n "$REDIS_PASSWORD" ]] || missing+=(REDIS_PASSWORD)
+          if [[ "$DATABASE_ENGINE" == "mysql" && -z "$DATABASE_ROOT_PASSWORD" ]]; then
+            missing+=(DATABASE_ROOT_PASSWORD)
+          fi
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing GitHub Actions configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
           export DOCKER_CONFIG="$(mktemp -d)"
           trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 
           printf '%s' "${{ github.token }}" |
-            docker login "${{ env.GHCR_REGISTRY }}" -u "${{ github.actor }}" --password-stdin
-          printf '%s' "${{ secrets.ACR_PASSWORD }}" |
-            docker login "${{ env.ACR_REGISTRY }}" -u "${{ secrets.ACR_USERNAME }}" --password-stdin
+            docker login "$GHCR_REGISTRY" -u "${{ github.actor }}" --password-stdin
+          printf '%s' "$ALIYUN_ACR_PASSWORD" |
+            docker login "$ALIYUN_ACR_REGISTRY" -u "$ALIYUN_ACR_USERNAME" --password-stdin
 
-          GHCR_REPOSITORY="${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}"
-          ACR_REPOSITORY="${{ env.ACR_REGISTRY }}/${{ env.ACR_IMAGE_NAME }}"
-          TAG="app-service-${VERSION}"
+          GHCR_REPOSITORY="$GHCR_REGISTRY/$GHCR_IMAGE_NAME"
+          ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
 
-          if docker pull "${GHCR_REPOSITORY}:${TAG}"; then
+          if docker pull "$GHCR_REPOSITORY:$IMAGE_TAG"; then
             IMAGE_REPOSITORY="$GHCR_REPOSITORY"
-          elif docker pull "${ACR_REPOSITORY}:${TAG}"; then
+          elif docker pull "$ACR_REPOSITORY:$IMAGE_TAG"; then
             echo "GHCR pull failed; using Aliyun ACR fallback."
             IMAGE_REPOSITORY="$ACR_REPOSITORY"
           else
-            echo "Unable to pull ${TAG} from GHCR or Aliyun ACR." >&2
+            echo "Unable to pull image $IMAGE_TAG from GHCR or Aliyun ACR." >&2
             exit 1
           fi
 
-          echo "IMAGE_REPOSITORY=${IMAGE_REPOSITORY}" >> "$GITHUB_ENV"
+          PROJECT_NAME="$(printf '%s' "${{ github.event.repository.name }}" |
+            tr '[:upper:]' '[:lower:]' |
+            sed 's/[^a-z0-9_-]/-/g')"
+          DEPLOY_DIR="$HOME/deployments/$PROJECT_NAME"
+          mkdir -p "$DEPLOY_DIR"
+          chmod 700 "$DEPLOY_DIR"
+          cd "$DEPLOY_DIR"
 
-      - name: Infrastructure Provisioning & Deployment
-        run: |
-          # 1. 初始化工作区沙盒，确保环境隔离
-          mkdir -p ${{ env.PROJECT_NAME }} && cd ${{ env.PROJECT_NAME }}
-          printf 'IMAGE_REPOSITORY=%s\nVERSION=%s\n' "$IMAGE_REPOSITORY" "$VERSION" > .env
-
-          echo "=== Step 1: Generating Infrastructure as Code (IaC) ==="
-          
-          # 2. 动态生成服务编排文件
-          cat > docker-compose.yml << 'EOF'
-          # ============================================================
-          # Generated by CI/CD Pipeline
-          # Project: ${{ env.PROJECT_NAME }} | Version: ${{ env.VERSION }}
-          # ============================================================
+          cat > compose.yaml <<'COMPOSE_EOF'
           services:
-            # -------------------------------------------------------
-            # Middleware: MySQL
-            # -------------------------------------------------------
             mysql:
               image: mysql:8.0
-              container_name: ${{ env.PROJECT_NAME }}-mysql
+              profiles: [mysql]
               restart: unless-stopped
               environment:
-                MYSQL_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
-                MYSQL_DATABASE: ${{ env.PROJECT_NAME }}_db
-              ports:
-                - "3306:3306"
+                MYSQL_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:?DATABASE_ROOT_PASSWORD is required}
+                MYSQL_DATABASE: ${DATABASE_NAME:-app}
+                MYSQL_USER: ${DATABASE_USERNAME:-app}
+                MYSQL_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+                TZ: Asia/Shanghai
               volumes:
                 - mysql-data:/var/lib/mysql
-                # 可选：挂载初始化脚本
-                # - ./init-sql:/docker-entrypoint-initdb.d
               command:
                 - --character-set-server=utf8mb4
                 - --collation-server=utf8mb4_unicode_ci
-                - --default-authentication-plugin=mysql_native_password
+              healthcheck:
+                test: [CMD-SHELL, "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+                interval: 10s
+                timeout: 5s
+                retries: 12
+                start_period: 30s
 
-            # -------------------------------------------------------
-            # Middleware: Redis
-            # -------------------------------------------------------
+            postgres:
+              image: postgres:16-alpine
+              profiles: [postgres]
+              restart: unless-stopped
+              environment:
+                POSTGRES_DB: ${DATABASE_NAME:-app}
+                POSTGRES_USER: ${DATABASE_USERNAME:-app}
+                POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+                TZ: Asia/Shanghai
+              volumes:
+                - postgres-data:/var/lib/postgresql/data
+              healthcheck:
+                test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+                interval: 10s
+                timeout: 5s
+                retries: 12
+                start_period: 20s
+
             redis:
               image: redis:7-alpine
-              container_name: ${{ env.PROJECT_NAME }}-redis
               restart: unless-stopped
-              ports:
-                - "6379:6379"
+              environment:
+                REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+              command: [sh, -c, 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
               volumes:
                 - redis-data:/data
-              command: redis-server --appendonly yes
+              healthcheck:
+                test: [CMD-SHELL, 'redis-cli -a "$$REDIS_PASSWORD" ping | grep PONG']
+                interval: 10s
+                timeout: 5s
+                retries: 10
 
-            # -------------------------------------------------------
-            # Middleware: Nacos Registry & Config Center
-            # -------------------------------------------------------
-            nacos:
-              image: nacos/nacos-server:v2.3.0
-              container_name: ${{ env.PROJECT_NAME }}-nacos
+            app:
+              image: ${IMAGE_REPOSITORY:?IMAGE_REPOSITORY is required}:${IMAGE_TAG:?IMAGE_TAG is required}
               restart: unless-stopped
               environment:
-                - PREFER_HOST_MODE=hostname
-                - MODE=standalone
-                - SPRING_DATASOURCE_PLATFORM=mysql
-                - MYSQL_SERVICE_HOST=mysql
-                - MYSQL_SERVICE_PORT=3306
-                - MYSQL_SERVICE_DB_NAME=nacos_config
-                - MYSQL_SERVICE_USER=${{ secrets.DB_USER }}
-                - MYSQL_SERVICE_PASSWORD=${{ secrets.DB_PASSWORD }}
-                - JVM_XMS=512m
-                - JVM_XMX=512m
+                APP_ENV: prod
+                SPRING_PROFILES_ACTIVE: prod
+                SERVER_PORT: 8080
+                SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?SPRING_DATASOURCE_URL is required}
+                SPRING_DATASOURCE_USERNAME: ${DATABASE_USERNAME:-app}
+                SPRING_DATASOURCE_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+                SPRING_DATA_REDIS_HOST: redis
+                SPRING_DATA_REDIS_PORT: 6379
+                SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
               ports:
-                - "8848:8848"
-                - "9848:9848"
-              depends_on:
-                - mysql
-
-            # -------------------------------------------------------
-            # Business Application: App Service (示例)
-            # -------------------------------------------------------
-            app-service:
-              image: ${IMAGE_REPOSITORY}:app-service-${VERSION}
-              container_name: ${{ env.PROJECT_NAME }}-app-service
-              restart: unless-stopped
-              environment:
-                - SPRING_PROFILES_ACTIVE=prod
-                - DB_HOST=mysql
-                - REDIS_HOST=redis
-                - NACOS_HOST=nacos
-              ports:
-                - "8080:8080"
-              depends_on:
-                - mysql
-                - redis
-                - nacos
-
-          networks:
-            default:
-              name: ${{ env.PROJECT_NAME }}-network
-              driver: bridge
+                - "${APP_PORT:-8080}:8080"
 
           volumes:
             mysql-data:
+            postgres-data:
             redis-data:
-          EOF
+          COMPOSE_EOF
 
-          echo "=== Step 2: Pre-deployment Cleanup ==="
-          # Graceful shutdown of existing compose stack
-          docker compose down 2>/dev/null || true
-          
-          # Force remove any residual containers matching the project prefix to prevent naming conflicts
-          docker ps -aq --filter "name=${{ env.PROJECT_NAME }}-" | xargs -r docker rm -f
+          if [[ "$DATABASE_ENGINE" == "mysql" ]]; then
+            SPRING_DATASOURCE_URL="jdbc:mysql://mysql:3306/$DATABASE_NAME?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true"
+          else
+            SPRING_DATASOURCE_URL="jdbc:postgresql://postgres:5432/$DATABASE_NAME"
+            # Compose interpolates the whole model before filtering profiles.
+            # The inactive MySQL service therefore needs a harmless fallback.
+            DATABASE_ROOT_PASSWORD="${DATABASE_ROOT_PASSWORD:-$DATABASE_PASSWORD}"
+          fi
 
-          echo "=== Step 3: Pull Latest Images ==="
-          docker compose pull mysql redis nacos
+          export IMAGE_REPOSITORY IMAGE_TAG DATABASE_NAME DATABASE_USERNAME
+          export DATABASE_PASSWORD DATABASE_ROOT_PASSWORD REDIS_PASSWORD
+          export SPRING_DATASOURCE_URL APP_PORT
 
-          echo "=== Step 4: Bootstrapping Infrastructure ==="
-          docker compose up -d mysql redis
-          
-          # MySQL Health Check Waiter
-          echo "Waiting for MySQL initialization..."
-          for i in {1..30}; do
-            if docker exec ${{ env.PROJECT_NAME }}-mysql mysqladmin ping -h localhost -uroot -p"${{ secrets.DB_ROOT_PASSWORD }}" 2>/dev/null; then
-              echo "[OK] MySQL is ready."
-              break
-            fi
-            if [ $i -eq 30 ]; then echo "[ERROR] MySQL initialization timeout."; exit 1; fi
-            sleep 3
-          done
+          docker compose --project-name "$PROJECT_NAME" --profile "$DATABASE_ENGINE" config --quiet
+          docker compose --project-name "$PROJECT_NAME" --profile "$DATABASE_ENGINE" \
+            up -d --wait --wait-timeout 180 "$DATABASE_ENGINE" redis
+          docker compose --project-name "$PROJECT_NAME" --profile "$DATABASE_ENGINE" \
+            up -d --remove-orphans app
+          docker compose --project-name "$PROJECT_NAME" --profile "$DATABASE_ENGINE" ps
 
-          echo "=== Step 5: Bootstrapping Middleware ==="
-          docker compose up -d nacos
-          
-          # Nacos Health Check Waiter
-          echo "Waiting for Nacos initialization..."
-          for i in {1..30}; do
-            if curl -sf http://localhost:8848/nacos/v1/ns/instance/list?serviceName=nacos > /dev/null 2>&1; then
-              echo "[OK] Nacos is ready."
-              break
-            fi
-            if [ $i -eq 30 ]; then echo "[ERROR] Nacos initialization timeout."; exit 1; fi
-            sleep 3
-          done
-
-          echo "=== Step 6: Starting Business Services ==="
-          docker compose up -d app-service
-          
-          # Application Health Check Waiter (Replace with actual /health endpoint)
-          echo "Waiting for Application to start..."
-          for i in {1..20}; do
-            if curl -sf http://localhost:8080/ > /dev/null 2>&1; then
-              echo "[OK] Application is running."
-              break
-            fi
-            if [ $i -eq 20 ]; then 
-              echo "[ERROR] Application health check failed. Fetching recent logs:"
-              docker compose logs app-service --tail 50
-              exit 1
-            fi
-            sleep 3
-          done
-
-          echo "=== Step 7: Post-deployment Housekeeping ==="
-          # Clean up dangling images to release disk space
-          docker image prune -f
-
-          echo "============================================================"
-          echo "Deployment Completed Successfully! Target: ${{ github.event.inputs.target_env || 'aliyun' }} | Version: $VERSION"
-          echo "============================================================"
+          echo "Deployment completed: $IMAGE_REPOSITORY:$IMAGE_TAG"

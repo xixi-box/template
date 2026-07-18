@@ -9,9 +9,9 @@
 #   - 每个 service 都有 healthcheck，保证启动顺序
 #
 # 使用方式:
-#   1. 复制到项目根目录: docker-compose.dev.yml
+#   1. 复制到项目根目录: docker-compose.yml
 #   2. 复制 .env.example → .env 并填入实际值
-#   3. docker compose -f docker-compose.dev.yml up -d
+#   3. docker compose up -d
 # ============================================================
 
 services:

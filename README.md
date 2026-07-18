@@ -24,7 +24,7 @@
 
 | 模板 | 说明 |
 |------|------|
-| [docker-compose.dev.yml](docker-compose.dev.yml) | 本地开发环境（MySQL + Redis 必选，Nacos / Kafka / Prometheus+Grafana 可选），全 healthcheck |
+| [docker-compose.yml](docker-compose.yml) | 本地开发编排（MySQL + Redis 必选，Nacos / Kafka / Prometheus+Grafana 可选），全 healthcheck；应用服务在 IDE 中运行 |
 
 ## ⚙️ Spring Boot
 
@@ -48,7 +48,25 @@
 
 | 模板 | 说明 |
 |------|------|
-| [deploy-template.yml](deploy-template.yml) | GitHub Actions 双推 GHCR/ACR；Self-hosted Runner 默认拉取 GHCR，失败时回退 ACR，并使用 IaC Compose 分阶段启动 |
+| [deploy-template.yml](deploy-template.yml) | 单文件生产部署：双推 GHCR/ACR；Self-hosted Runner 优先拉取 GHCR，失败时回退 ACR，并生成 Spring Boot + MySQL/PostgreSQL + Redis 的生产 Compose |
+
+### 部署模板约定
+
+1. 将 `deploy-template.yml` 复制到新项目的 `.github/workflows/deploy.yml`。
+2. 在 GitHub Actions 中配置以下公共凭据：
+   - Variables：`ALIYUN_ACR_REGISTRY`、`ALIYUN_ACR_USERNAME`
+   - Secret：`ALIYUN_ACR_PASSWORD`
+3. 项目根目录默认提供 `Dockerfile`；生产 Compose 已内嵌在 workflow 中，无需项目额外维护。
+4. 手动运行 workflow 时选择部署节点和生产数据库（MySQL 或 PostgreSQL）。应用容器固定注入 `APP_ENV=prod` 与 `SPRING_PROFILES_ACTIVE=prod`。
+
+可选 Variables：
+
+- `ALIYUN_ACR_IMAGE_NAME`：ACR 的 `命名空间/仓库`，默认 `wangshun_build/<GitHub仓库名>`。
+- `DEPLOY_DOCKERFILE`：Dockerfile 路径，默认 `./Dockerfile`。
+- `DATABASE_NAME`、`DATABASE_USERNAME`：生产数据库名称和业务账号，默认均为 `app`。
+- `APP_PORT`：应用映射到宿主机的端口，默认 `8080`。
+
+生产部署还需要 Secrets：`DATABASE_PASSWORD`、`DATABASE_ROOT_PASSWORD`（选择 MySQL 时必需）和 `REDIS_PASSWORD`。GHCR 镜像名自动使用 `${{ github.repository }}`，不需要额外配置账号、密码或镜像名。部署目标 `aliyun` / `wsl` 同时作为 self-hosted Runner 标签和 GitHub Environment 名称。
 
 ## 🕳️ FRP 内网穿透
 
