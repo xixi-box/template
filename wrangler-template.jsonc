@@ -1,0 +1,42 @@
+/**
+ * Cloudflare Worker 配置模板 — 复制到项目根目录 wrangler.jsonc 并替换 <占位符>
+ * 部署方式: 本地 `npx wrangler deploy`，或 GitHub Actions (deploy-cloudflare-workers-template.yml)
+ * 文档: https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "<worker-name>",               // 全局唯一，即线上地址 <name>.<账户子域>.workers.dev 的前缀
+  "main": "src/index.ts",                // 入口文件
+  "compatibility_date": "<YYYY-MM-DD>",  // 不能超过当天日期，写当前日期即可
+  "workers_dev": true,                   // 启用 *.workers.dev 免费地址
+
+  // 非敏感变量 (会打进代码包，严禁放密钥! 修改后需重新 deploy 生效)
+  "vars": {
+    "ENV": "prod",
+    "SOME_API_BASE_URL": "https://api.example.com/v1"
+  }
+
+  // 敏感密钥不要写在这里! 用命令配置一次即可，跨部署持久:
+  //   npx wrangler secret put <SECRET_NAME>
+  // 本地开发: 复制 .dev.vars.example 为 .dev.vars (加入 .gitignore)
+
+  // ---- 按需取消注释 ----
+
+  // 自定义域名 (域名需托管在同一 Cloudflare 账号)
+  // "routes": [{ "pattern": "api.example.com", "custom_domain": true }],
+
+  // 定时任务 (需要代码里 export scheduled 处理器)
+  // "triggers": { "crons": ["0 9 * * 1-5"] },
+
+  // KV 存储 (先 npx wrangler kv namespace create KV 拿到 id)
+  // "kv_namespaces": [{ "binding": "KV", "id": "<namespace-id>" }],
+
+  // R2 对象存储 (先 npx wrangler r2 bucket create <bucket>)
+  // "r2_buckets": [{ "binding": "R2", "bucket_name": "<bucket>" }],
+
+  // 消息队列 (付费计划；handler 只验签入队，consumer 慢慢消费，适合耗时任务)
+  // "queues": {
+  //   "producers": [{ "binding": "QUEUE", "queue": "<queue-name>" }],
+  //   "consumers": [{ "queue": "<queue-name>", "max_batch_size": 1 }]
+  // }
+}

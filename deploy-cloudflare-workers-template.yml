@@ -1,0 +1,95 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Required repository or organization configuration:
+#   Secrets:   CLOUDFLARE_API_TOKEN
+#              (Cloudflare -> My Profile -> API Tokens -> "Edit Cloudflare Workers" template,
+#               account resources 选目标账号，zone resources 可留空)
+# Optional repository variables:
+#   CLOUDFLARE_ACCOUNT_ID - Account ID (Dashboard 首页右侧；令牌可访问多个账号时必填)
+#   WORKER_DIRECTORY      - wrangler.jsonc 所在目录，默认 . (monorepo 时填子目录)
+#   HEALTH_CHECK_URL      - 部署后健康检查地址 (如 https://xxx.workers.dev/health)，未配置则跳过
+
+env:
+  WORKER_DIRECTORY: ${{ vars.WORKER_DIRECTORY || '.' }}
+  HEALTH_CHECK_URL: ${{ vars.HEALTH_CHECK_URL || '' }}
+
+jobs:
+  deploy:
+    name: Test and Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: deploy-cloudflare-${{ github.repository }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Validate deploy configuration
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || missing+=(CLOUDFLARE_API_TOKEN)
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing GitHub Actions configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+          if [[ ! -f "$WORKER_DIRECTORY/wrangler.jsonc" && ! -f "$WORKER_DIRECTORY/wrangler.toml" ]]; then
+            echo "wrangler config not found: $WORKER_DIRECTORY/wrangler.{jsonc,toml}" >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: ${{ env.WORKER_DIRECTORY }}
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ${{ env.WORKER_DIRECTORY }}
+        run: npm run typecheck --if-present
+
+      - name: Test
+        working-directory: ${{ env.WORKER_DIRECTORY }}
+        run: npm test --if-present
+
+      - name: Deploy with Wrangler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ env.WORKER_DIRECTORY }}
+          command: deploy
+
+      - name: Health check
+        if: env.HEALTH_CHECK_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_CHECK_URL" || true)"
+            if [[ "$code" == 2* ]]; then
+              echo "Health check passed (HTTP $code, attempt $attempt)"
+              exit 0
+            fi
+            echo "Attempt $attempt: unexpected status '$code', retrying in 5s..."
+            sleep 5
+          done
+          echo "Health check failed after 3 attempts: $HEALTH_CHECK_URL" >&2
+          exit 1
