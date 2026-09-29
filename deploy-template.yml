@@ -204,7 +204,8 @@ jobs:
             echo "::group::Relay image $name"
             SRC="$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"
             DST="$ACR_REPOSITORY:${prefix}${IMAGE_TAG}"
-            docker pull "$SRC"
+            # 5-minute cap: a stalled proxy must not hang the relay
+            timeout 300 docker pull "$SRC"
             docker tag "$SRC" "$DST"
             docker tag "$SRC" "$ACR_REPOSITORY:${prefix}latest"
             docker push "$DST"
