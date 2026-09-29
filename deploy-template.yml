@@ -247,13 +247,15 @@ jobs:
           GHCR_REPOSITORY="$GHCR_REGISTRY/$GHCR_IMAGE_NAME"
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
 
-          # Pull every image; GHCR first, per-image Aliyun ACR fallback.
-          # Mixed sources are safe: one SHA always means one build artifact.
+          # Pull every image; GHCR first with a 15-minute cap (cross-border
+          # GHCR pulls can stall indefinitely from CN runners), per-image
+          # Aliyun ACR fallback. Mixed sources are safe: one SHA always
+          # means one build artifact.
           IMAGE_REFS=()
           while IFS='|' read -r name dockerfile prefix; do
-            if docker pull "$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"; then
+            if timeout 900 docker pull "$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"; then
               IMAGE_REFS+=("$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}")
-            elif docker pull "$ACR_REPOSITORY:${prefix}${IMAGE_TAG}"; then
+            elif timeout 900 docker pull "$ACR_REPOSITORY:${prefix}${IMAGE_TAG}"; then
               echo "GHCR pull failed for $name; using Aliyun ACR fallback."
               IMAGE_REFS+=("$ACR_REPOSITORY:${prefix}${IMAGE_TAG}")
             else
