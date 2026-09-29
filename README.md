@@ -48,7 +48,7 @@
 
 | 模板 | 说明 |
 |------|------|
-| [deploy-template.yml](deploy-template.yml) | 单文件生产部署：单镜像/多镜像双模式；双推 GHCR/ACR；Self-hosted Runner 优先拉取 GHCR，失败时回退 ACR；模板管理 MySQL/PostgreSQL/Redis 基础设施（可选 none 纯应用模式），应用服务可用 `deploy/prod-services.yaml` 声明 |
+| [deploy-template.yml](deploy-template.yml) | 单文件生产部署：单镜像/多镜像双模式；构建仅推 GHCR（境内秒级），由 aliyun Runner 中转推送 ACR（免跨境）；Self-hosted Runner 优先拉取 GHCR，失败时回退 ACR；模板管理 MySQL/PostgreSQL/Redis 基础设施（可选 none 纯应用模式），应用服务可用 `deploy/prod-services.yaml` 声明 |
 
 ### 部署模板约定
 
