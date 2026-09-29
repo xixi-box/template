@@ -144,6 +144,8 @@ jobs:
     permissions:
       contents: read
       packages: read
+    env:
+      ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
     steps:
       - name: Pull from GHCR and push to Aliyun ACR
         shell: bash
