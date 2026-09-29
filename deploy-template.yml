@@ -342,10 +342,14 @@ jobs:
             COMPOSE_FILES+=(-f compose.infra.yaml)
           fi
 
-          OVERRIDE_FILE="$GITHUB_WORKSPACE/deploy/prod-services.yaml"
-          if [[ -f "$OVERRIDE_FILE" ]]; then
+          if [[ -f "$GITHUB_WORKSPACE/deploy/prod-services.yaml" ]]; then
+            # Copy next to the generated compose files so relative bind mounts
+            # resolve against the deploy directory (projects copy their config
+            # files there in a preparation step before this one).
+            install -m 600 "$GITHUB_WORKSPACE/deploy/prod-services.yaml" \
+              "$DEPLOY_DIR/prod-services.yaml"
             echo "Using project services file: deploy/prod-services.yaml"
-            COMPOSE_FILES+=(-f "$OVERRIDE_FILE")
+            COMPOSE_FILES+=(-f prod-services.yaml)
             APP_TARGET=""
           elif [[ "$DATABASE_ENGINE" != "none" ]]; then
             cat > compose.app.yaml <<'COMPOSE_EOF'
