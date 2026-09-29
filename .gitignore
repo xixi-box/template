@@ -1,2 +1,3 @@
 .idea/
 acr-credentials.env
+cf-ghcr-mirror/.wrangler/
