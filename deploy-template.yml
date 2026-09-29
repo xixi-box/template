@@ -204,18 +204,18 @@ jobs:
             echo "::group::Relay image $name"
             SRC="$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"
             DST="$ACR_REPOSITORY:${prefix}${IMAGE_TAG}"
-            # 5-minute cap per attempt, 3 attempts: a flapping proxy stalls
+            # 2-minute cap per attempt, 6 attempts: a flapping proxy stalls
             # mid-transfer, but downloaded layers persist between attempts
             PULL_OK=""
-            for attempt in 1 2 3; do
-              if timeout 300 docker pull "$SRC"; then
+            for attempt in 1 2 3 4 5 6; do
+              if timeout 120 docker pull "$SRC"; then
                 PULL_OK=yes
                 break
               fi
               echo "GHCR pull attempt $attempt failed for $name; retrying..."
             done
             if [[ -z "$PULL_OK" ]]; then
-              echo "Unable to pull $SRC from GHCR after 3 attempts." >&2
+              echo "Unable to pull $SRC from GHCR after 6 attempts." >&2
               exit 1
             fi
             docker tag "$SRC" "$DST"
