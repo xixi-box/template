@@ -24,7 +24,7 @@
 
 | 模板 | 说明 |
 |------|------|
-| [docker-compose.yml](docker-compose.yml) | 本地开发编排（MySQL + Redis 必选，Nacos / Kafka / Prometheus+Grafana 可选），全 healthcheck；应用服务在 IDE 中运行 |
+| [docker-compose.yml](docker-compose.yml) | 本地开发编排（MySQL + Redis 必选，Nacos / Kafka / Prometheus+Grafana 可选），全 healthcheck；应用服务在 IDE 中运行。只管本地依赖：生产基础设施内嵌在 deploy workflow 中，生产应用服务由各项目 `deploy/prod-services.yaml` 声明，三者不要合并 |
 
 ## ⚙️ Spring Boot
 
@@ -48,7 +48,7 @@
 
 | 模板 | 说明 |
 |------|------|
-| [deploy-template.yml](deploy-template.yml) | 单文件生产部署：双推 GHCR/ACR；Self-hosted Runner 优先拉取 GHCR，失败时回退 ACR，并生成 Spring Boot + MySQL/PostgreSQL + Redis 的生产 Compose |
+| [deploy-template.yml](deploy-template.yml) | 单文件生产部署：单镜像/多镜像双模式；双推 GHCR/ACR；Self-hosted Runner 优先拉取 GHCR，失败时回退 ACR；模板管理 MySQL/PostgreSQL/Redis 基础设施（可选 none 纯应用模式），应用服务可用 `deploy/prod-services.yaml` 声明 |
 
 ### 部署模板约定
 
@@ -56,15 +56,23 @@
 2. 在 GitHub Actions 中配置以下公共凭据：
    - Variables：`ALIYUN_ACR_REGISTRY`、`ALIYUN_ACR_USERNAME`
    - Secret：`ALIYUN_ACR_PASSWORD`
-3. 项目根目录默认提供 `Dockerfile`；生产 Compose 已内嵌在 workflow 中，无需项目额外维护。
-4. 手动运行 workflow 时选择部署节点和生产数据库（MySQL 或 PostgreSQL）。应用容器固定注入 `APP_ENV=prod` 与 `SPRING_PROFILES_ACTIVE=prod`。
+3. 项目根目录默认提供 `Dockerfile`；基础设施 Compose 内嵌在 workflow 中，无需项目额外维护。
+4. 手动运行 workflow 时选择部署节点、基础设施（MySQL / PostgreSQL / none）和镜像清单。应用容器默认注入 `APP_ENV=prod` 与 `SPRING_PROFILES_ACTIVE=prod`。
 
 可选 Variables：
 
 - `ALIYUN_ACR_IMAGE_NAME`：ACR 的 `命名空间/仓库`，默认 `wangshun_build/<GitHub仓库名>`。
-- `DEPLOY_DOCKERFILE`：Dockerfile 路径，默认 `./Dockerfile`。
+- `DEPLOY_IMAGES`：多镜像清单（JSON 数组），如 `[{"name":"user","dockerfile":"Dockerfile.user"},{"name":"app","dockerfile":"Dockerfile.app"}]`；`name` 同时作为镜像 tag 前缀（`user-<sha>`）。不配置时为单镜像默认（`./Dockerfile`，tag 直接用 `<sha>`）。多模块项目在 build job 的 PROJECT PRE-BUILD 注释处插入 Maven/pnpm 预构建步骤。
+- `PROJECT_NAME`：覆盖 compose 项目名（默认取 GitHub 仓库名）。迁移已有部署栈时必须设置，否则项目级卷名改变会导致数据重新初始化。
 - `DATABASE_NAME`、`DATABASE_USERNAME`：生产数据库名称和业务账号，默认均为 `app`。
 - `APP_PORT`：应用映射到宿主机的端口，默认 `8080`。
+- `DEPLOY_DOCKERFILE`：单镜像模式 Dockerfile 路径，默认 `./Dockerfile`（多镜像模式用 `DEPLOY_IMAGES`）。
+
+应用服务约定（`deploy/prod-services.yaml`）：
+
+- 模板负责版本身份（SHA 标签、双推、回退、旧镜像清理）与基础设施；项目特有服务（多服务编排、Nacos、网关等）写在仓库内 `deploy/prod-services.yaml`，镜像一律引用 `${IMAGE_<NAME>}` 变量（如 `${IMAGE_USER}`），不出现 registry 地址和 tag。
+- `database` 选 `none` 时模板不启动任何基础设施，全部服务由 `deploy/prod-services.yaml` 定义（适合静态应用、或自带数据库定义需保持卷名连续的项目）。
+- 项目自有密钥在 workflow 的 deploy job `env:` 块中从 Secrets 透传，供 prod-services.yaml 插值。
 
 生产部署还需要 Secrets：`DATABASE_PASSWORD`、`DATABASE_ROOT_PASSWORD`（选择 MySQL 时必需）和 `REDIS_PASSWORD`。GHCR 镜像名自动使用 `${{ github.repository }}`，不需要额外配置账号、密码或镜像名。部署目标 `aliyun` / `wsl` 同时作为 self-hosted Runner 标签和 GitHub Environment 名称。
 

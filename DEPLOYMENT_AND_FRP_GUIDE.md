@@ -90,6 +90,33 @@ GHCR 与 ACR 的作用是镜像存储和分发。双推的意义是为不同网�
 
 生产 Compose 被内嵌在工作流中，原因很直接：对这些项目而言，生产部署结构是公共能力，而不是每个业务项目都应重复维护的一份文件。
 
+### 2.1 单镜像与多镜像：责任边界在哪
+
+模板同时支持单镜像和多镜像项目，分界线只有一条：**版本身份归模板，服务定义归项目。**
+
+- **模板独占**：SHA 标签、双仓库推送、拉取回退、旧镜像清理、MySQL/PostgreSQL/Redis 基础设施。项目不写这些，写了就是重复。
+- **项目独占**：应用服务的环境变量、端口、depends_on、健康检查、Nacos 这类特殊依赖。模板不可能预知，全部写在仓库内 `deploy/prod-services.yaml`。
+
+多镜像项目配置一个 `DEPLOY_IMAGES` 变量（JSON 镜像清单），构建阶段循环构建；单镜像项目什么都不配，行为与旧版模板一致。`deploy/prod-services.yaml` 中镜像一律引用模板导出的变量：
+
+```yaml
+services:
+  user-service:
+    image: ${IMAGE_USER}
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}   # 来自 workflow env 中透传的 Secret
+    depends_on:
+      mysql:
+        condition: service_healthy
+```
+
+项目自有密钥不进模板也不进 compose 文件：在项目 workflow 副本的 deploy job `env:` 块里从 GitHub Secrets 透传，compose 插值时取用。
+
+两个容易踩的坑：
+
+1. **`database: none` 与自管数据库**。模板基础设施是给新项目的默认件。如果项目自带数据库定义（为了保持既有卷名、初始化脚本或端口），选 `none`，数据库作为普通服务写进 `prod-services.yaml`。
+2. **项目名与数据连续性**。compose 卷名是项目级作用域（`<项目名>_mysql_data`）。迁移一个已经在跑的部署栈时，必须用 `PROJECT_NAME` 变量固定旧项目名，否则换名等于换卷，MySQL 会当成首次启动重新初始化，旧数据留在原卷里不再被使用。
+
 ### 3. 为什么同时使用 GHCR 和 ACR
 
 当前策略是：
