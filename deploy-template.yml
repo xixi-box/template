@@ -215,10 +215,11 @@ jobs:
             # mid-transfer, but downloaded layers persist between attempts
             PULL_OK=""
             for attempt in 1 2 3 4 5 6; do
-              # Odd attempts use the CF Workers mirror (direct CF anycast),
-              # even attempts fall back to direct GHCR; layers cache across
-              # attempts on the same daemon, so any progress is kept.
-              if [[ -n "$RELAY_MIRROR_HOST" ]] && (( attempt % 2 == 1 )); then
+              # Mirror attempts first (direct CF anycast, sustained throughput);
+              # only after exhausting mirror attempts fall back to direct GHCR.
+              # Layers cache across attempts on the same daemon, so any
+              # progress is kept.
+              if [[ -n "$RELAY_MIRROR_HOST" && attempt -le 4 ]]; then
                 SRC_TRY="$RELAY_MIRROR_HOST/$GHCR_IMAGE_NAME:${prefix}${IMAGE_TAG}"
               else
                 SRC_TRY="$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"
