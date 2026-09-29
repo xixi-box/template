@@ -271,7 +271,7 @@ jobs:
               tr '[:upper:]' '[:lower:]' |
               sed 's/[^a-z0-9_-]/-/g')"
           fi
-          DEPLOY_DIR="$HOME/deployments/$PROJECT_NAME"
+          DEPLOY_DIR="${HOME:-/root}/deployments/$PROJECT_NAME"
           mkdir -p "$DEPLOY_DIR"
           chmod 700 "$DEPLOY_DIR"
           cd "$DEPLOY_DIR"
