@@ -138,7 +138,10 @@ jobs:
 
           while IFS='|' read -r name dockerfile prefix; do
             echo "::group::Build image $name ($dockerfile)"
+            # Aliyun ACR Personal rejects OCI provenance/SBOM manifests
             docker buildx build \
+              --provenance=false \
+              --sbom=false \
               --file "$dockerfile" \
               --tag "$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}" \
               --tag "$GHCR_REPOSITORY:${prefix}latest" \
