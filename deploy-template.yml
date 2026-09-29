@@ -146,6 +146,7 @@ jobs:
       packages: read
     env:
       ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+      RELAY_MIRROR_HOST: ${{ vars.RELAY_MIRROR_HOST }}
     steps:
       - name: Pull from GHCR and push to Aliyun ACR
         shell: bash
@@ -192,14 +193,20 @@ jobs:
 
           printf '%s' "${{ github.token }}" |
             docker login "$GHCR_REGISTRY" -u "${{ github.actor }}" --password-stdin
+          if [[ -n "$RELAY_MIRROR_HOST" ]]; then
+            # Worker passes Authorization through to GHCR; same credentials.
+            printf '%s' "${{ github.token }}" |
+              docker login "$RELAY_MIRROR_HOST" -u "${{ github.actor }}" --password-stdin || true
+          fi
           printf '%s' "$ALIYUN_ACR_PASSWORD" |
             docker login "$ALIYUN_ACR_REGISTRY" -u "$ALIYUN_ACR_USERNAME" --password-stdin
 
           GHCR_REPOSITORY="$GHCR_REGISTRY/$GHCR_IMAGE_NAME"
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
+          SRC="$GHCR_REPOSITORY"
 
-          # This job runs inside China: GHCR pulls ride the runner's proxy,
-          # ACR pushes go direct. The cross-border push leg is eliminated.
+          # This job runs inside China: ACR pushes go direct; GHCR pulls ride
+          # the mirror (odd attempts) or direct GHCR (even attempts).
           while IFS='|' read -r name prefix; do
             echo "::group::Relay image $name"
             SRC="$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"
@@ -208,14 +215,24 @@ jobs:
             # mid-transfer, but downloaded layers persist between attempts
             PULL_OK=""
             for attempt in 1 2 3 4 5 6; do
-              if timeout 120 docker pull "$SRC"; then
+              # Odd attempts use the CF Workers mirror (direct CF anycast),
+              # even attempts fall back to direct GHCR; layers cache across
+              # attempts on the same daemon, so any progress is kept.
+              if [[ -n "$RELAY_MIRROR_HOST" ]] && (( attempt % 2 == 1 )); then
+                SRC_TRY="$RELAY_MIRROR_HOST/$GHCR_IMAGE_NAME:${prefix}${IMAGE_TAG}"
+              else
+                SRC_TRY="$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"
+              fi
+              echo "attempt $attempt: pulling $SRC_TRY"
+              if timeout 240 docker pull "$SRC_TRY"; then
                 PULL_OK=yes
+                SRC="$SRC_TRY"
                 break
               fi
-              echo "GHCR pull attempt $attempt failed for $name; retrying..."
+              echo "pull attempt $attempt failed for $name; retrying..."
             done
             if [[ -z "$PULL_OK" ]]; then
-              echo "Unable to pull $SRC from GHCR after 6 attempts." >&2
+              echo "Unable to pull image for $name after 6 attempts (mirror + direct)." >&2
               exit 1
             fi
             docker tag "$SRC" "$DST"
