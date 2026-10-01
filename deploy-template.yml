@@ -175,10 +175,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Serialize builds of the same repo+env+ref so the <name>latest tag always
-    # ends up on the newest build of that ref. Different refs build in parallel.
+    # Serialize builds of the same repo+env+ref+image so the <name>latest tag
+    # always ends up on the newest build. The matrix key MUST be part of the
+    # group: without it every leg shares one group and cancels each other.
     concurrency:
-      group: build-${{ github.repository }}-${{ github.event.inputs.target_env }}-${{ github.event.inputs.deploy_ref || 'main' }}
+      group: build-${{ github.repository }}-${{ github.event.inputs.target_env }}-${{ github.event.inputs.deploy_ref || 'main' }}-${{ matrix.image.name }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
