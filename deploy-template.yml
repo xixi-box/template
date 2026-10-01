@@ -21,7 +21,7 @@ on:
           - postgres
           - none
       deploy_ref:
-        description: Branch/ref to build and deploy (workflow file always comes from the branch you run it from)
+        description: Branch/ref to build and deploy (workflow file comes from the branch you run it from)
         required: false
         default: main
         type: string
@@ -29,8 +29,15 @@ on:
 # Registry strategy: Aliyun ACR only. One cross-border leg (GitHub runner
 # pushes ACR); deployment machines pull domestically. GHCR is not used.
 #
-# Build pipeline: setup (plan) -> pre-build (project artifacts) ->
+# Pipeline: setup (plan) -> pre-build (project artifacts) ->
 # build matrix (one job per image, visible progress) -> deploy.
+#
+# Fits repository shapes:
+#   single image   - no DEPLOY_IMAGES; one ./Dockerfile, tag = <sha>
+#   multi image    - DEPLOY_IMAGES JSON list; tag = <name><sha>
+#   multi branch   - deploy_ref input; per-ref build locks; layer cache
+#                    shared across branches via an explicit gha scope
+#   static/no-infra- database=none; services come from deploy/prod-services.yaml
 #
 # Required repository or organization configuration:
 #   Variables: ALIYUN_ACR_REGISTRY, ALIYUN_ACR_USERNAME
@@ -41,7 +48,6 @@ on:
 #   ALIYUN_ACR_IMAGE_NAME - defaults to wangshun_build/<repository>
 #   DEPLOY_IMAGES         - JSON image list, defaults to single ./Dockerfile image
 #                           [{"name":"user","dockerfile":"Dockerfile.user"},...]
-#                           tag becomes <name><sha>; single default keeps plain <sha>
 #   PROJECT_NAME          - docker compose project name, defaults to <repository>;
 #                           set it when migrating a stack that already runs under
 #                           a different project name (volumes are project-scoped)
@@ -66,11 +72,14 @@ env:
   DATABASE_USERNAME: ${{ vars.DATABASE_USERNAME || 'app' }}
   APP_PORT: ${{ vars.APP_PORT || '8080' }}
   IMAGE_TAG: ${{ github.sha }}
+  WORKFLOW_REF: ${{ github.ref_name }}
 
 jobs:
   setup:
     name: Resolve Build Plan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -119,6 +128,8 @@ jobs:
           else
             IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
           fi
+          # GitHub matrices must be an object of arrays; the inner key must
+          # match the prefix used by matrix.* below.
           echo "matrix={\"image\":$IMAGE_SPECS}" >> "$GITHUB_OUTPUT"
           echo "Matrix: $IMAGE_SPECS"
 
@@ -126,6 +137,8 @@ jobs:
     name: Project Pre-Build
     needs: setup
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout source code
         uses: actions/checkout@v7
@@ -135,21 +148,26 @@ jobs:
       # -------------------------------------------------------------------
       # PROJECT PRE-BUILD (optional)
       # Multi-module projects insert Maven / pnpm build and artifact copy
-      # steps here (artifacts land in the repository root so the Dockerfiles
-      # can COPY them). The whole workspace is archived below and handed to
-      # every build job.
+      # steps here. Build outputs must be copied to the repository root so
+      # the Dockerfiles can COPY them from there; node_modules and target/
+      # are stripped before archiving (nothing in a Dockerfile reads them).
       # -------------------------------------------------------------------
 
-      - name: Archive workspace for build jobs
+      - name: Archive build context for matrix jobs
         shell: bash
-        run: tar czf /tmp/build-artifacts.tgz --exclude='.git' .
+        run: |
+          set -euo pipefail
+          find . -type d -name node_modules -prune -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name target -prune -exec rm -rf {} + 2>/dev/null || true
+          tar czf /tmp/build-artifacts.tgz --exclude='.git' .
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - name: Upload build context
+        uses: actions/upload-artifact@v7
         with:
           name: build-artifacts
           path: /tmp/build-artifacts.tgz
           retention-days: 1
+          compression-level: 0
 
   build-and-push:
     name: Build ${{ matrix.name }}
@@ -157,16 +175,21 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Serialize builds of the same repo+env+ref so the <name>latest tag always
+    # ends up on the newest build of that ref. Different refs build in parallel.
+    concurrency:
+      group: build-${{ github.repository }}-${{ github.event.inputs.target_env }}-${{ github.event.inputs.deploy_ref || 'main' }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - name: Download build context
+        uses: actions/download-artifact@v8
         with:
           name: build-artifacts
 
-      - name: Extract build artifacts
+      - name: Extract build context
         shell: bash
         run: tar xzf build-artifacts.tgz && rm -f build-artifacts.tgz
 
@@ -188,7 +211,10 @@ jobs:
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
           PREFIX="${{ matrix.image.tag_prefix || matrix.image.name }}"
 
-          # Aliyun ACR Personal rejects OCI provenance/SBOM manifests
+          # Aliyun ACR Personal rejects OCI provenance/SBOM manifests.
+          # The gha cache scope is explicit so every branch shares one cache;
+          # the default (per-branch) scope makes multi-branch repos rebuild
+          # everything from scratch.
           docker buildx build \
             --provenance=false \
             --sbom=false \
@@ -197,6 +223,8 @@ jobs:
             --tag "$ACR_REPOSITORY:${PREFIX}latest" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --cache-from type=gha,scope=buildcache \
+            --cache-to type=gha,mode=max,scope=buildcache \
             --push \
             .
 
@@ -207,6 +235,8 @@ jobs:
     environment: ${{ github.event.inputs.target_env }}
     permissions:
       contents: read
+    # Deployments of the same repo+env are serialized: compose container names
+    # and volumes are project-scoped and would collide.
     concurrency:
       group: deploy-${{ github.repository }}-${{ github.event.inputs.target_env }}
       cancel-in-progress: false
@@ -225,13 +255,14 @@ jobs:
         with:
           ref: ${{ github.event.inputs.deploy_ref || 'main' }}
 
-      - name: Restore prod-services from main when the deployed ref lacks it
+      - name: Restore prod-services from the workflow branch when absent on deploy_ref
         shell: bash
         run: |
+          set -euo pipefail
           if [[ ! -f "$GITHUB_WORKSPACE/deploy/prod-services.yaml" ]]; then
-            git fetch origin main --depth 1
-            git checkout origin/main -- deploy/prod-services.yaml
-            echo "deploy/prod-services.yaml restored from origin/main (absent on the deployed ref)"
+            git fetch --depth 1 origin "$WORKFLOW_REF"
+            git checkout FETCH_HEAD -- deploy/prod-services.yaml
+            echo "deploy/prod-services.yaml restored from origin/$WORKFLOW_REF"
           fi
 
       - name: Deploy from Aliyun ACR
@@ -293,7 +324,7 @@ jobs:
 
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
 
-          # Pull every image from ACR (domestic, fast). 10-minute cap is a
+          # Pull every image from ACR (domestic, fast). The 10-minute cap is a
           # stall guard only; normal pulls finish in seconds.
           IMAGE_REFS=()
           while IFS='|' read -r name prefix; do
@@ -313,7 +344,7 @@ jobs:
           else
             PROJECT_NAME="$(printf '%s' "${{ github.event.repository.name }}" |
               tr '[:upper:]' '[:lower:]' |
-              sed 's/[^a-z0-9_-]/-/g')"
+              sed 's/[^a-z0-9_-]/-/g')'
           fi
           DEPLOY_DIR="${HOME:-/root}/deployments/$PROJECT_NAME"
           mkdir -p "$DEPLOY_DIR"

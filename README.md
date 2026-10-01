@@ -48,7 +48,7 @@
 
 | 模板 | 说明 |
 |------|------|
-| [deploy-template.yml](deploy-template.yml) | 单文件生产部署：单镜像/多镜像双模式；**仅推 Aliyun ACR**（GHCR 已弃用，部署机国内拉取秒级）；模板管理 MySQL/PostgreSQL/Redis 基础设施（可选 none 纯应用模式），应用服务可用 `deploy/prod-services.yaml` 声明 |
+| [deploy-template.yml](deploy-template.yml) | 单文件生产部署：单镜像/多镜像双模式；**仅推 Aliyun ACR**（GHCR 已弃用，部署机国内拉取秒级）；构建为矩阵作业（每镜像一个 job，进度可见）并带跨分支共享层缓存；模板管理 MySQL/PostgreSQL/Redis 基础设施（可选 none 纯应用模式），应用服务可用 `deploy/prod-services.yaml` 声明 |
 
 ### 部署模板约定
 
@@ -57,7 +57,9 @@
    - Variables：`ALIYUN_ACR_REGISTRY`、`ALIYUN_ACR_USERNAME`
    - Secret：`ALIYUN_ACR_PASSWORD`
 3. 项目根目录默认提供 `Dockerfile`；基础设施 Compose 内嵌在 workflow 中，无需项目额外维护。
-4. 手动运行 workflow 时选择部署节点、基础设施（MySQL / PostgreSQL / none）和镜像清单。应用容器默认注入 `APP_ENV=prod` 与 `SPRING_PROFILES_ACTIVE=prod`。
+4. 手动运行 workflow 时选择部署节点、基础设施（MySQL / PostgreSQL / none）、部署分支和镜像清单。应用容器默认注入 `APP_ENV=prod` 与 `SPRING_PROFILES_ACTIVE=prod`。
+5. 多分支项目：始终用 **Use workflow from: main**（部署文件只维护一份），用 `deploy_ref` 选择要构建部署的分支；同一分支的构建自动串行（`latest` 标签不会被旧构建覆盖），不同分支可并行。构建层缓存在各分支间共享（`scope=buildcache`）。
+6. 多镜像项目：在 pre-build 步骤里把构建产物复制到仓库根（Dockerfile 从根 COPY），模板会自动剔除 `node_modules/` 与 `target/` 再分发给各构建 job。
 
 > 仓库策略：仅 Aliyun ACR。构建推 ACR 是唯一一段跨境（高峰期可能变慢），部署机拉取纯国内秒级。曾用过 GHCR 双推、aliyun 中转、公共/自建镜像加速器，实测均无法稳定超越直推 ACR 的平均速度，故全部移除。
 
