@@ -345,7 +345,7 @@ jobs:
           else
             PROJECT_NAME="$(printf '%s' "${{ github.event.repository.name }}" |
               tr '[:upper:]' '[:lower:]' |
-              sed 's/[^a-z0-9_-]/-/g')'
+              sed 's/[^a-z0-9_-]/-/g')"
           fi
           DEPLOY_DIR="${HOME:-/root}/deployments/$PROJECT_NAME"
           mkdir -p "$DEPLOY_DIR"
