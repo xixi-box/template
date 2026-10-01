@@ -197,8 +197,6 @@ jobs:
             --tag "$ACR_REPOSITORY:${PREFIX}latest" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
-            --cache-from type=registry,ref=$ACR_REPOSITORY:buildcache \
-            --cache-to type=registry,ref=$ACR_REPOSITORY:buildcache,mode=max \
             --push \
             .
 
