@@ -29,6 +29,9 @@ on:
 # Registry strategy: Aliyun ACR only. One cross-border leg (GitHub runner
 # pushes ACR); deployment machines pull domestically. GHCR is not used.
 #
+# Build pipeline: setup (plan) -> pre-build (project artifacts) ->
+# build matrix (one job per image, visible progress) -> deploy.
+#
 # Required repository or organization configuration:
 #   Variables: ALIYUN_ACR_REGISTRY, ALIYUN_ACR_USERNAME
 #   Secrets:   ALIYUN_ACR_PASSWORD
@@ -39,8 +42,6 @@ on:
 #   DEPLOY_IMAGES         - JSON image list, defaults to single ./Dockerfile image
 #                           [{"name":"user","dockerfile":"Dockerfile.user"},...]
 #                           tag becomes <name><sha>; single default keeps plain <sha>
-#   deploy_ref            - branch/ref to build and deploy (input, default main);
-#                           deploy/prod-services.yaml falls back to origin/main
 #   PROJECT_NAME          - docker compose project name, defaults to <repository>;
 #                           set it when migrating a stack that already runs under
 #                           a different project name (volumes are project-scoped)
@@ -67,24 +68,16 @@ env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  build-and-push:
-    name: Build and Push Images to ACR
+  setup:
+    name: Resolve Build Plan
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - name: Checkout source code
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.deploy_ref || 'main' }}
-
-      # ---------------------------------------------------------------------
-      # PROJECT PRE-BUILD (optional)
-      # Multi-module projects insert Maven / pnpm build and artifact copy steps
-      # here, before images are built. The image loop below assumes every
-      # Dockerfile can build from the repository root context.
-      # ---------------------------------------------------------------------
 
       - name: Validate build configuration
         shell: bash
@@ -117,6 +110,66 @@ jobs:
             [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Invalid image name: $name" >&2; exit 1; }
           done < <(echo "$IMAGE_SPECS" | jq -r '.[] | "\(.name)|\(.dockerfile)|\(.tag_prefix // .name)"')
 
+      - name: Publish build matrix
+        id: plan
+        shell: bash
+        run: |
+          if [ -n "${DEPLOY_IMAGES:-}" ]; then
+            IMAGE_SPECS="$DEPLOY_IMAGES"
+          else
+            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
+          fi
+          echo "matrix=$IMAGE_SPECS" >> "$GITHUB_OUTPUT"
+          echo "Matrix: $IMAGE_SPECS"
+
+  pre-build:
+    name: Project Pre-Build
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.deploy_ref || 'main' }}
+
+      # -------------------------------------------------------------------
+      # PROJECT PRE-BUILD (optional)
+      # Multi-module projects insert Maven / pnpm build and artifact copy
+      # steps here (artifacts land in the repository root so the Dockerfiles
+      # can COPY them). The whole workspace is archived below and handed to
+      # every build job.
+      # -------------------------------------------------------------------
+
+      - name: Archive workspace for build jobs
+        shell: bash
+        run: tar czf /tmp/build-artifacts.tgz --exclude='.git' .
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: /tmp/build-artifacts.tgz
+          retention-days: 1
+
+  build-and-push:
+    name: Build ${{ matrix.name }}
+    needs: [setup, pre-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Extract build artifacts
+        shell: bash
+        run: tar xzf build-artifacts.tgz && rm -f build-artifacts.tgz
+
       - name: Log in to Aliyun ACR
         uses: docker/login-action@v4
         with:
@@ -127,36 +180,27 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push images to ACR
+      - name: Build and push to ACR
         shell: bash
         run: |
           set -euo pipefail
 
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
+          PREFIX="${{ matrix.image.tag_prefix || matrix.image.name }}"
 
-          if [ -n "${DEPLOY_IMAGES:-}" ]; then
-            IMAGE_SPECS="$DEPLOY_IMAGES"
-          else
-            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
-          fi
-
-          while IFS='|' read -r name dockerfile prefix; do
-            echo "::group::Build image $name ($dockerfile)"
-            # Aliyun ACR Personal rejects OCI provenance/SBOM manifests
-            docker buildx build \
-              --provenance=false \
-              --sbom=false \
-              --file "$dockerfile" \
-              --tag "$ACR_REPOSITORY:${prefix}${IMAGE_TAG}" \
-              --tag "$ACR_REPOSITORY:${prefix}latest" \
-              --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-              --label "org.opencontainers.image.revision=${{ github.sha }}" \
-              --cache-from type=registry,ref=$ACR_REPOSITORY:buildcache \
-              --cache-to type=registry,ref=$ACR_REPOSITORY:buildcache,mode=max \
-              --push \
-              .
-            echo "::endgroup::"
-          done < <(echo "$IMAGE_SPECS" | jq -r '.[] | "\(.name)|\(.dockerfile)|\(.tag_prefix // .name)"')
+          # Aliyun ACR Personal rejects OCI provenance/SBOM manifests
+          docker buildx build \
+            --provenance=false \
+            --sbom=false \
+            --file "${{ matrix.image.dockerfile }}" \
+            --tag "$ACR_REPOSITORY:${PREFIX}${IMAGE_TAG}" \
+            --tag "$ACR_REPOSITORY:${PREFIX}latest" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --cache-from type=registry,ref=$ACR_REPOSITORY:buildcache \
+            --cache-to type=registry,ref=$ACR_REPOSITORY:buildcache,mode=max \
+            --push \
+            .
 
   deploy:
     name: Deploy to ${{ github.event.inputs.target_env }}
@@ -221,7 +265,7 @@ jobs:
           fi
 
           # Self-hosted runners may not have jq; DEPLOY_IMAGES is already
-          # schema-validated by the build job, so plain text parsing suffices.
+          # schema-validated by the setup job, so plain text parsing suffices.
           image_spec_lines() {
             printf '%s' "$1" | tr -d '\n\r\t ' \
               | sed -e 's/^\[//' -e 's/\]$//' -e 's/},{/}\n{/g' \
