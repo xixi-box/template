@@ -94,7 +94,7 @@ jobs:
             exit 1
           fi
 
-          if [ -n "$DEPLOY_IMAGES" ]; then
+          if [ -n "${DEPLOY_IMAGES:-}" ]; then
             IMAGE_SPECS="$DEPLOY_IMAGES"
           else
             IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
@@ -125,7 +125,7 @@ jobs:
 
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
 
-          if [ -n "$DEPLOY_IMAGES" ]; then
+          if [ -n "${DEPLOY_IMAGES:-}" ]; then
             IMAGE_SPECS="$DEPLOY_IMAGES"
           else
             IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
@@ -194,7 +194,7 @@ jobs:
             exit 1
           fi
 
-          if [ -n "$DEPLOY_IMAGES" ]; then
+          if [ -n "${DEPLOY_IMAGES:-}" ]; then
             IMAGE_SPECS="$DEPLOY_IMAGES"
           else
             IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
@@ -246,7 +246,7 @@ jobs:
             export "$export_var=${IMAGE_REFS[-1]}"
           done < <(image_spec_lines "$IMAGE_SPECS")
 
-          if [[ -n "$PROJECT_NAME" ]]; then
+          if [[ -n "${PROJECT_NAME:-}" ]]; then
             PROJECT_NAME="$(printf '%s' "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]')"
           else
             PROJECT_NAME="$(printf '%s' "${{ github.event.repository.name }}" |
