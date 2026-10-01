@@ -21,10 +21,11 @@ on:
           - postgres
           - none
 
+# Registry strategy: Aliyun ACR only. One cross-border leg (GitHub runner
+# pushes ACR); deployment machines pull domestically. GHCR is not used.
+#
 # Required repository or organization configuration:
 #   Variables: ALIYUN_ACR_REGISTRY, ALIYUN_ACR_USERNAME
-#              RELAY_RUNNER (optional, label of the China-side runner used to
-#              relay images into ACR; defaults to aliyun)
 #   Secrets:   ALIYUN_ACR_PASSWORD
 #              DATABASE_PASSWORD, REDIS_PASSWORD,
 #              DATABASE_ROOT_PASSWORD (required when MySQL is selected)
@@ -32,25 +33,22 @@ on:
 #   ALIYUN_ACR_IMAGE_NAME - defaults to wangshun_build/<repository>
 #   DEPLOY_IMAGES         - JSON image list, defaults to single ./Dockerfile image
 #                           [{"name":"user","dockerfile":"Dockerfile.user"},...]
-#                           tag becomes <name>-<sha>; single default keeps plain <sha>
+#                           tag becomes <name><sha>; single default keeps plain <sha>
 #   PROJECT_NAME          - docker compose project name, defaults to <repository>;
 #                           set it when migrating a stack that already runs under
 #                           a different project name (volumes are project-scoped)
-#   DEPLOY_DOCKERFILE     - defaults to ./Dockerfile (single-image mode only)
 #   DATABASE_NAME         - defaults to app
 #   DATABASE_USERNAME     - defaults to app
 #   APP_PORT              - defaults to 8080
 #
 # Application services:
 #   The template owns infrastructure (mysql/postgres/redis) and orchestration
-#   (dual push, SHA tags, pull fallback, cleanup). Project-specific services are
+#   (ACR push, SHA tags, old image cleanup). Project-specific services are
 #   declared in deploy/prod-services.yaml; image references must use the
 #   IMAGE_<NAME> variables exported by the deploy job. Without that file the
 #   template deploys a single Spring Boot app service.
 
 env:
-  GHCR_REGISTRY: ghcr.io
-  GHCR_IMAGE_NAME: ${{ github.repository }}
   ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
   ALIYUN_ACR_USERNAME: ${{ vars.ALIYUN_ACR_USERNAME }}
   ALIYUN_ACR_IMAGE_NAME: ${{ vars.ALIYUN_ACR_IMAGE_NAME || format('wangshun_build/{0}', github.event.repository.name) }}
@@ -63,11 +61,10 @@ env:
 
 jobs:
   build-and-push:
-    name: Build and Push Images
+    name: Build and Push Images to ACR
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
       - name: Checkout source code
@@ -82,74 +79,8 @@ jobs:
 
       - name: Validate build configuration
         shell: bash
-        run: |
-          set -euo pipefail
-
-          # ACR Variables/Secrets are validated in the relay job, which is the
-          # only consumer after the GHCR-only build.
-
-          if [ -n "$DEPLOY_IMAGES" ]; then
-            IMAGE_SPECS="$DEPLOY_IMAGES"
-          else
-            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
-          fi
-
-          echo "$IMAGE_SPECS" | jq -e 'type == "array" and length > 0 and all(.[]; (.name | type == "string") and (.dockerfile | type == "string"))' >/dev/null \
-            || { echo "DEPLOY_IMAGES must be a JSON array of {name, dockerfile, tag_prefix?}" >&2; exit 1; }
-
-          while IFS='|' read -r name dockerfile prefix; do
-            [[ -f "$dockerfile" ]] || { echo "Dockerfile not found: $dockerfile (image $name)" >&2; exit 1; }
-            [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Invalid image name: $name" >&2; exit 1; }
-          done < <(echo "$IMAGE_SPECS" | jq -r '.[] | "\(.name)|\(.dockerfile)|\(.tag_prefix // .name)"')
-          echo "$IMAGE_SPECS" > /tmp/image-specs.json
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GHCR_REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push images to GHCR
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          GHCR_REPOSITORY="$GHCR_REGISTRY/$GHCR_IMAGE_NAME"
-
-          while IFS='|' read -r name dockerfile prefix; do
-            echo "::group::Build image $name ($dockerfile)"
-            docker buildx build \
-              --provenance=false \
-              --sbom=false \
-              --file "$dockerfile" \
-              --tag "$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}" \
-              --tag "$GHCR_REPOSITORY:${prefix}latest" \
-              --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-              --label "org.opencontainers.image.revision=${{ github.sha }}" \
-              --cache-from type=gha \
-              --cache-to type=gha,mode=max \
-              --push \
-              .
-            echo "::endgroup::"
-          done < <(jq -r '.[] | "\(.name)|\(.dockerfile)|\(.tag_prefix // .name)"' /tmp/image-specs.json)
-
-  relay-to-acr:
-    name: Relay Images to Aliyun ACR
-    needs: build-and-push
-    runs-on: [self-hosted, "${{ vars.RELAY_RUNNER || 'aliyun' }}"]
-    permissions:
-      contents: read
-      packages: read
-    env:
-      ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
-      RELAY_MIRROR_HOST: ${{ vars.RELAY_MIRROR_HOST }}
-    steps:
-      - name: Pull from GHCR and push to Aliyun ACR
-        shell: bash
+        env:
+          ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -169,90 +100,62 @@ jobs:
             IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
           fi
 
-          # Parser duplicated from the deploy job: self-hosted runners may not
-          # have jq; DEPLOY_IMAGES was schema-validated by the build job.
-          image_spec_lines() {
-            printf '%s' "$1" | tr -d '\n\r\t ' \
-              | sed -e 's/^\[//' -e 's/\]$//' -e 's/},{/}\n{/g' \
-              | { cat; echo; } \
-              | while IFS= read -r obj; do
-                  [ -n "$obj" ] || continue
-                  name="$(printf '%s' "$obj" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
-                  [ -n "$name" ] || continue
-                  if printf '%s' "$obj" | grep -q '"tag_prefix"'; then
-                    prefix="$(printf '%s' "$obj" | sed -n 's/.*"tag_prefix":"\([^"]*\)".*/\1/p')"
-                  else
-                    prefix="$name"
-                  fi
-                  printf '%s|%s\n' "$name" "$prefix"
-                done
-          }
+          echo "$IMAGE_SPECS" | jq -e 'type == "array" and length > 0 and all(.[]; (.name | type == "string") and (.dockerfile | type == "string"))' >/dev/null \
+            || { echo "DEPLOY_IMAGES must be a JSON array of {name, dockerfile, tag_prefix?}" >&2; exit 1; }
 
-          export DOCKER_CONFIG="$(mktemp -d)"
-          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          while IFS='|' read -r name dockerfile prefix; do
+            [[ -f "$dockerfile" ]] || { echo "Dockerfile not found: $dockerfile (image $name)" >&2; exit 1; }
+            [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Invalid image name: $name" >&2; exit 1; }
+          done < <(echo "$IMAGE_SPECS" | jq -r '.[] | "\(.name)|\(.dockerfile)|\(.tag_prefix // .name)"')
 
-          printf '%s' "${{ github.token }}" |
-            docker login "$GHCR_REGISTRY" -u "${{ github.actor }}" --password-stdin
-          if [[ -n "$RELAY_MIRROR_HOST" ]]; then
-            # Worker passes Authorization through to GHCR; same credentials.
-            printf '%s' "${{ github.token }}" |
-              docker login "$RELAY_MIRROR_HOST" -u "${{ github.actor }}" --password-stdin || true
-          fi
-          printf '%s' "$ALIYUN_ACR_PASSWORD" |
-            docker login "$ALIYUN_ACR_REGISTRY" -u "$ALIYUN_ACR_USERNAME" --password-stdin
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ALIYUN_ACR_REGISTRY }}
+          username: ${{ env.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
 
-          GHCR_REPOSITORY="$GHCR_REGISTRY/$GHCR_IMAGE_NAME"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push images to ACR
+        shell: bash
+        run: |
+          set -euo pipefail
+
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
-          SRC="$GHCR_REPOSITORY"
 
-          # This job runs inside China: ACR pushes go direct; GHCR pulls ride
-          # the mirror (odd attempts) or direct GHCR (even attempts).
-          while IFS='|' read -r name prefix; do
-            echo "::group::Relay image $name"
-            SRC="$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"
-            DST="$ACR_REPOSITORY:${prefix}${IMAGE_TAG}"
-            # 2-minute cap per attempt, 6 attempts: a flapping proxy stalls
-            # mid-transfer, but downloaded layers persist between attempts
-            PULL_OK=""
-            for attempt in 1 2 3 4 5 6; do
-              # Mirror attempts first (direct CF anycast, sustained throughput);
-              # only after exhausting mirror attempts fall back to direct GHCR.
-              # Layers cache across attempts on the same daemon, so any
-              # progress is kept.
-              if [[ -n "$RELAY_MIRROR_HOST" && attempt -le 4 ]]; then
-                SRC_TRY="$RELAY_MIRROR_HOST/$GHCR_IMAGE_NAME:${prefix}${IMAGE_TAG}"
-              else
-                SRC_TRY="$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"
-              fi
-              echo "attempt $attempt: pulling $SRC_TRY"
-              if timeout 240 docker pull "$SRC_TRY"; then
-                PULL_OK=yes
-                SRC="$SRC_TRY"
-                break
-              fi
-              echo "pull attempt $attempt failed for $name; retrying..."
-            done
-            if [[ -z "$PULL_OK" ]]; then
-              echo "Unable to pull image for $name after 6 attempts (mirror + direct)." >&2
-              exit 1
-            fi
-            docker tag "$SRC" "$DST"
-            docker tag "$SRC" "$ACR_REPOSITORY:${prefix}latest"
-            docker push "$DST"
-            docker push "$ACR_REPOSITORY:${prefix}latest"
+          if [ -n "$DEPLOY_IMAGES" ]; then
+            IMAGE_SPECS="$DEPLOY_IMAGES"
+          else
+            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
+          fi
+
+          while IFS='|' read -r name dockerfile prefix; do
+            echo "::group::Build image $name ($dockerfile)"
+            # Aliyun ACR Personal rejects OCI provenance/SBOM manifests
+            docker buildx build \
+              --provenance=false \
+              --sbom=false \
+              --file "$dockerfile" \
+              --tag "$ACR_REPOSITORY:${prefix}${IMAGE_TAG}" \
+              --tag "$ACR_REPOSITORY:${prefix}latest" \
+              --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+              --label "org.opencontainers.image.revision=${{ github.sha }}" \
+              --cache-from type=gha \
+              --cache-to type=gha,mode=max \
+              --push \
+              .
             echo "::endgroup::"
-          done < <(image_spec_lines "$IMAGE_SPECS")
-
-          echo "Relay completed: $ACR_REPOSITORY:${IMAGE_TAG}"
+          done < <(echo "$IMAGE_SPECS" | jq -r '.[] | "\(.name)|\(.dockerfile)|\(.tag_prefix // .name)"')
 
   deploy:
     name: Deploy to ${{ github.event.inputs.target_env }}
-    needs: [build-and-push, relay-to-acr]
+    needs: build-and-push
     runs-on: [self-hosted, "${{ github.event.inputs.target_env }}"]
     environment: ${{ github.event.inputs.target_env }}
     permissions:
       contents: read
-      packages: read
     concurrency:
       group: deploy-${{ github.repository }}-${{ github.event.inputs.target_env }}
       cancel-in-progress: false
@@ -269,7 +172,7 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Deploy with GHCR primary and Aliyun ACR fallback
+      - name: Deploy from Aliyun ACR
         shell: bash
         run: |
           set -euo pipefail
@@ -286,7 +189,6 @@ jobs:
               missing+=(DATABASE_ROOT_PASSWORD)
             fi
           fi
-
           if (( ${#missing[@]} > 0 )); then
             printf 'Missing GitHub Actions configuration: %s\n' "${missing[*]}" >&2
             exit 1
@@ -300,8 +202,6 @@ jobs:
 
           # Self-hosted runners may not have jq; DEPLOY_IMAGES is already
           # schema-validated by the build job, so plain text parsing suffices.
-          # Emits "name|dockerfile|tag_prefix" lines; absent tag_prefix
-          # defaults to name (jq // semantics: empty string stays empty).
           image_spec_lines() {
             printf '%s' "$1" | tr -d '\n\r\t ' \
               | sed -e 's/^\[//' -e 's/\]$//' -e 's/},{/}\n{/g' \
@@ -310,16 +210,14 @@ jobs:
                   [ -n "$obj" ] || continue
                   name="$(printf '%s' "$obj" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
                   [ -n "$name" ] || continue
-                  dockerfile="$(printf '%s' "$obj" | sed -n 's/.*"dockerfile":"\([^"]*\)".*/\1/p')"
                   if printf '%s' "$obj" | grep -q '"tag_prefix"'; then
                     prefix="$(printf '%s' "$obj" | sed -n 's/.*"tag_prefix":"\([^"]*\)".*/\1/p')"
                   else
                     prefix="$name"
                   fi
-                  printf '%s|%s|%s\n' "$name" "$dockerfile" "$prefix"
+                  printf '%s|%s\n' "$name" "$prefix"
                 done
           }
-
           if [ -z "$(image_spec_lines "$IMAGE_SPECS")" ]; then
             echo "DEPLOY_IMAGES must be a JSON array of {name, dockerfile, tag_prefix?}" >&2
             exit 1
@@ -328,27 +226,20 @@ jobs:
           export DOCKER_CONFIG="$(mktemp -d)"
           trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 
-          printf '%s' "${{ github.token }}" |
-            docker login "$GHCR_REGISTRY" -u "${{ github.actor }}" --password-stdin
           printf '%s' "$ALIYUN_ACR_PASSWORD" |
             docker login "$ALIYUN_ACR_REGISTRY" -u "$ALIYUN_ACR_USERNAME" --password-stdin
 
-          GHCR_REPOSITORY="$GHCR_REGISTRY/$GHCR_IMAGE_NAME"
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
 
-          # Pull every image; GHCR first with a 15-minute cap (cross-border
-          # GHCR pulls can stall indefinitely from CN runners), per-image
-          # Aliyun ACR fallback. Mixed sources are safe: one SHA always
-          # means one build artifact.
+          # Pull every image from ACR (domestic, fast). 10-minute cap is a
+          # stall guard only; normal pulls finish in seconds.
           IMAGE_REFS=()
-          while IFS='|' read -r name dockerfile prefix; do
-            if timeout 900 docker pull "$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}"; then
-              IMAGE_REFS+=("$GHCR_REPOSITORY:${prefix}${IMAGE_TAG}")
-            elif timeout 900 docker pull "$ACR_REPOSITORY:${prefix}${IMAGE_TAG}"; then
-              echo "GHCR pull failed for $name; using Aliyun ACR fallback."
-              IMAGE_REFS+=("$ACR_REPOSITORY:${prefix}${IMAGE_TAG}")
+          while IFS='|' read -r name prefix; do
+            IMAGE_REF="$ACR_REPOSITORY:${prefix}${IMAGE_TAG}"
+            if timeout 600 docker pull "$IMAGE_REF"; then
+              IMAGE_REFS+=("$IMAGE_REF")
             else
-              echo "Unable to pull image $name ($IMAGE_TAG) from GHCR or Aliyun ACR." >&2
+              echo "Unable to pull $IMAGE_REF from Aliyun ACR." >&2
               exit 1
             fi
             export_var="IMAGE_$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')"
@@ -514,16 +405,7 @@ jobs:
             fi
           }
 
-          GHCR_LOCAL_REFS=()
-          ACR_LOCAL_REFS=()
-          for ref in "${IMAGE_REFS[@]}"; do
-            case "$ref" in
-              "$GHCR_REPOSITORY:"*) GHCR_LOCAL_REFS+=("$ref") ;;
-              "$ACR_REPOSITORY:"*) ACR_LOCAL_REFS+=("$ref") ;;
-            esac
-          done
-          cleanup_repository_images "$GHCR_REPOSITORY" ${GHCR_LOCAL_REFS+"${GHCR_LOCAL_REFS[@]}"}
-          cleanup_repository_images "$ACR_REPOSITORY" ${ACR_LOCAL_REFS+"${ACR_LOCAL_REFS[@]}"}
+          cleanup_repository_images "$ACR_REPOSITORY" ${IMAGE_REFS+"${IMAGE_REFS[@]}"}
           docker image prune -f \
             --filter "label=org.opencontainers.image.source=https://github.com/${{ github.repository }}"
 
