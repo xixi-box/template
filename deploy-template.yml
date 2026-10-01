@@ -170,7 +170,7 @@ jobs:
           compression-level: 0
 
   build-and-push:
-    name: Build ${{ matrix.name }}
+    name: Build ${{ matrix.image.name }}
     needs: [setup, pre-build]
     runs-on: ubuntu-latest
     permissions:
