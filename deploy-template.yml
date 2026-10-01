@@ -20,6 +20,11 @@ on:
           - mysql
           - postgres
           - none
+      deploy_ref:
+        description: Branch/ref to build and deploy (workflow file always comes from the branch you run it from)
+        required: false
+        default: main
+        type: string
 
 # Registry strategy: Aliyun ACR only. One cross-border leg (GitHub runner
 # pushes ACR); deployment machines pull domestically. GHCR is not used.
@@ -34,6 +39,8 @@ on:
 #   DEPLOY_IMAGES         - JSON image list, defaults to single ./Dockerfile image
 #                           [{"name":"user","dockerfile":"Dockerfile.user"},...]
 #                           tag becomes <name><sha>; single default keeps plain <sha>
+#   deploy_ref            - branch/ref to build and deploy (input, default main);
+#                           deploy/prod-services.yaml falls back to origin/main
 #   PROJECT_NAME          - docker compose project name, defaults to <repository>;
 #                           set it when migrating a stack that already runs under
 #                           a different project name (volumes are project-scoped)
@@ -69,6 +76,8 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.deploy_ref || 'main' }}
 
       # ---------------------------------------------------------------------
       # PROJECT PRE-BUILD (optional)
@@ -171,6 +180,17 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.deploy_ref || 'main' }}
+
+      - name: Restore prod-services from main when the deployed ref lacks it
+        shell: bash
+        run: |
+          if [[ ! -f "$GITHUB_WORKSPACE/deploy/prod-services.yaml" ]]; then
+            git fetch origin main --depth 1
+            git checkout origin/main -- deploy/prod-services.yaml
+            echo "deploy/prod-services.yaml restored from origin/main (absent on the deployed ref)"
+          fi
 
       - name: Deploy from Aliyun ACR
         shell: bash
