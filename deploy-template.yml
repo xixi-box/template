@@ -119,7 +119,7 @@ jobs:
           else
             IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
           fi
-          echo "matrix=$IMAGE_SPECS" >> "$GITHUB_OUTPUT"
+          echo "matrix={\"image\":$IMAGE_SPECS}" >> "$GITHUB_OUTPUT"
           echo "Matrix: $IMAGE_SPECS"
 
   pre-build:
