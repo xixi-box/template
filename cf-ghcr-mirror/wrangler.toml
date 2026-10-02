@@ -1,6 +1,0 @@
-name = "ghcr-mirror"
-main = "src/index.js"
-compatibility_date = "2025-06-01"
-
-# 自定义域:GHCR 反代入口(需 wangshun.work 托管在 Cloudflare)
-routes = [{ pattern = "ghcr.wangshun.work", custom_domain = true }]
