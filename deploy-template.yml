@@ -108,7 +108,7 @@ jobs:
           if [ -n "${DEPLOY_IMAGES:-}" ]; then
             IMAGE_SPECS="$DEPLOY_IMAGES"
           else
-            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
+            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile"}]'
           fi
 
           echo "$IMAGE_SPECS" | jq -e 'type == "array" and length > 0 and all(.[]; (.name | type == "string") and (.dockerfile | type == "string"))' >/dev/null \
@@ -127,7 +127,7 @@ jobs:
           if [ -n "${DEPLOY_IMAGES:-}" ]; then
             IMAGE_SPECS="$DEPLOY_IMAGES"
           else
-            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
+            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile"}]'
           fi
           # GitHub matrices must be an object of arrays; the inner key must
           # match the prefix used by matrix.* below.
@@ -297,7 +297,7 @@ jobs:
           if [ -n "${DEPLOY_IMAGES:-}" ]; then
             IMAGE_SPECS="$DEPLOY_IMAGES"
           else
-            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]'
+            IMAGE_SPECS='[{"name":"app","dockerfile":"./Dockerfile"}]'
           fi
 
           # Self-hosted runners may not have jq; DEPLOY_IMAGES is already
