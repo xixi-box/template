@@ -69,16 +69,23 @@ def main():
     service = re.search(r'service="([^"]+)"', www).group(1)
 
     basic = base64.b64encode(f"{user}:{pw}".encode()).decode()
-    q = (f"service={urllib.parse.quote(service)}"
-         f"&scope=repository:{repo}:pull,delete")
-    r = urllib.request.Request(f"{realm}?{q}",
-                               headers={"Authorization": f"Basic {basic}"})
-    tok = json.load(urllib.request.urlopen(r, timeout=20))["token"]
-    acc = {"Authorization": f"Bearer {tok}", "Accept": ACCEPT}
+
+    def get_token(action):
+        q = (f"service={urllib.parse.quote(service)}"
+             f"&scope=repository:{repo}:{action}")
+        r = urllib.request.Request(f"{realm}?{q}",
+                                   headers={"Authorization": f"Basic {basic}"})
+        return json.load(urllib.request.urlopen(r, timeout=20))["token"]
+
+    tok = get_token("pull")
+    dtok = get_token("delete,*")
 
     def call(path, method="GET"):
+        headers = {"Authorization": f"Bearer {tok}", "Accept": ACCEPT}
+        if method == "DELETE":
+            headers["Authorization"] = f"Bearer {dtok}"
         req = urllib.request.Request(f"https://{reg}/v2/{repo}/{path}",
-                                     headers=acc, method=method)
+                                     headers=headers, method=method)
         return urllib.request.urlopen(req, timeout=30)
 
     tags = json.load(call("tags/list")).get("tags") or []
