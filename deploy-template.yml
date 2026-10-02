@@ -256,14 +256,16 @@ jobs:
         with:
           ref: ${{ github.event.inputs.deploy_ref || 'main' }}
 
-      - name: Restore prod-services from the workflow branch when absent on deploy_ref
+      - name: Force prod-services from the workflow branch (single source of truth)
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -f "$GITHUB_WORKSPACE/deploy/prod-services.yaml" ]]; then
-            git fetch --depth 1 origin "$WORKFLOW_REF"
+          git fetch --depth 1 origin "$WORKFLOW_REF"
+          if git cat-file -e "FETCH_HEAD:deploy/prod-services.yaml" 2>/dev/null; then
             git checkout FETCH_HEAD -- deploy/prod-services.yaml
-            echo "deploy/prod-services.yaml restored from origin/$WORKFLOW_REF"
+            echo "deploy/prod-services.yaml forced from origin/$WORKFLOW_REF"
+          else
+            echo "workflow branch has no deploy/prod-services.yaml; using deploy_ref copy if present"
           fi
 
       - name: Deploy from Aliyun ACR
@@ -505,3 +507,13 @@ jobs:
 
           echo "Deployment completed:"
           printf '  %s\n' "${IMAGE_REFS[@]}"
+      - name: Dump unhealthy containers on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker ps -a --format '{{.Names}}	{{.Status}}' | head -40 || true
+          for c in $(docker ps -a --filter health=unhealthy --format '{{.Names}}' | head -5); do
+            echo "==== $c logs ===="
+            docker logs "$c" --tail 40 2>&1 | tail -40 || true
+          done
+
