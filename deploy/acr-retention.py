@@ -56,10 +56,8 @@ def main():
     cur = os.environ["IMAGE_TAG"]
     specs = json.loads(os.environ.get("DEPLOY_IMAGES")
                        or '[{"name":"app","dockerfile":"./Dockerfile","tag_prefix":""}]')
-    prefixes = [s.get("tag_prefix") if s.get("tag_prefix") != "" else s["name"] for s in specs]
-    # single-image default spec keeps an explicit empty prefix -> use "" then
-    prefixes = ["" if (p == "app" and s.get("tag_prefix") == "") else p
-                for p, s in zip(prefixes, specs)]
+    # explicit tag_prefix wins ("" = no prefix, single-image); absent -> image name
+    prefixes = [s["tag_prefix"] if "tag_prefix" in s else s["name"] for s in specs]
 
     try:
         urllib.request.urlopen(f"https://{reg}/v2/", timeout=20)
