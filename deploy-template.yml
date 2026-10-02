@@ -114,10 +114,11 @@ jobs:
           echo "$IMAGE_SPECS" | jq -e 'type == "array" and length > 0 and all(.[]; (.name | type == "string") and (.dockerfile | type == "string"))' >/dev/null \
             || { echo "DEPLOY_IMAGES must be a JSON array of {name, dockerfile, tag_prefix?}" >&2; exit 1; }
 
-          while IFS='|' read -r name dockerfile prefix; do
-            [[ -f "$dockerfile" ]] || { echo "Dockerfile not found: $dockerfile (image $name)" >&2; exit 1; }
+          while IFS='|' read -r name dockerfile prefix context; do
             [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Invalid image name: $name" >&2; exit 1; }
-          done < <(echo "$IMAGE_SPECS" | jq -r '.[] | "\(.name)|\(.dockerfile)|\(.tag_prefix // .name)"')
+            [[ -n "$context" ]] || context=.
+            [[ -f "$context/$dockerfile" ]] || { echo "Dockerfile not found: $context/$dockerfile (image $name)" >&2; exit 1; }
+          done < <(echo "$IMAGE_SPECS" | jq -r '.[] | "\(.name)|\(.dockerfile)|\(.tag_prefix // .name)|\(.context // ".""')
 
       - name: Publish build matrix
         id: plan
@@ -211,6 +212,8 @@ jobs:
 
           ACR_REPOSITORY="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
           PREFIX="${{ matrix.image.tag_prefix || matrix.image.name }}"
+          CONTEXT="${{ matrix.image.context || '.' }}"
+          DOCKERFILE="$CONTEXT/${{ matrix.image.dockerfile }}"
 
           # Aliyun ACR Personal rejects OCI provenance/SBOM manifests.
           # The gha cache scope is explicit so every branch shares one cache;
@@ -219,7 +222,7 @@ jobs:
           docker buildx build \
             --provenance=false \
             --sbom=false \
-            --file "${{ matrix.image.dockerfile }}" \
+            --file "$DOCKERFILE" \
             --tag "$ACR_REPOSITORY:${PREFIX}${IMAGE_TAG}" \
             --tag "$ACR_REPOSITORY:${PREFIX}latest" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
@@ -227,7 +230,7 @@ jobs:
             --cache-from type=gha,scope=buildcache \
             --cache-to type=gha,mode=max,scope=buildcache \
             --push \
-            .
+            "$CONTEXT"
 
   deploy:
     name: Deploy to ${{ github.event.inputs.target_env }}
