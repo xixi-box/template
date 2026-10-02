@@ -263,6 +263,7 @@ jobs:
           git fetch --depth 1 origin "$WORKFLOW_REF"
           if git cat-file -e "FETCH_HEAD:deploy/prod-services.yaml" 2>/dev/null; then
             git checkout FETCH_HEAD -- deploy/prod-services.yaml
+            git cat-file -e "FETCH_HEAD:deploy/acr-retention.py" 2>/dev/null               && git checkout FETCH_HEAD -- deploy/acr-retention.py               || echo "(no acr-retention.py on workflow branch)"
             echo "deploy/prod-services.yaml forced from origin/$WORKFLOW_REF"
           else
             echo "workflow branch has no deploy/prod-services.yaml; using deploy_ref copy if present"
@@ -507,6 +508,17 @@ jobs:
 
           echo "Deployment completed:"
           printf '  %s\n' "${IMAGE_REFS[@]}"
+      - name: ACR retention (keep newest N versions per image)
+        if: success()
+        shell: bash
+        env:
+          ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+          ACR_KEEP_VERSIONS: ${{ vars.ACR_KEEP_VERSIONS || '5' }}
+        run: |
+          set -euo pipefail
+          command -v python3 >/dev/null 2>&1 || { echo "python3 missing; skip retention"; exit 0; }
+          python3 "$GITHUB_WORKSPACE/deploy/acr-retention.py"
+
       - name: Dump unhealthy containers on failure
         if: failure()
         shell: bash
