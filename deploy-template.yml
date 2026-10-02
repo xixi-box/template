@@ -310,11 +310,8 @@ jobs:
                   [ -n "$obj" ] || continue
                   name="$(printf '%s' "$obj" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
                   [ -n "$name" ] || continue
-                  if printf '%s' "$obj" | grep -q '"tag_prefix"'; then
-                    prefix="$(printf '%s' "$obj" | sed -n 's/.*"tag_prefix":"\([^"]*\)".*/\1/p')"
-                  else
-                    prefix="$name"
-                  fi
+                  prefix="$(printf '%s' "$obj" | sed -n 's/.*"tag_prefix":"\([^"]*\)".*/\1/p')"
+                  [ -n "$prefix" ] || prefix="$name"
                   printf '%s|%s\n' "$name" "$prefix"
                 done
           }
