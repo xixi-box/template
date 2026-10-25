@@ -1,0 +1,126 @@
+name: Build and Deploy (Atomic Single-Job)
+
+# 适用场景（与 deploy-template.yml 的区别）：
+#   纯解释型语言（Python/Node 脚本等）单镜像项目——Dockerfile COPY 的全是源代码，
+#   没有"预编译产物"（jar/dist）需要跨 job 中转。消灭 artifact 中转（配额敏感点）。
+#   结构：build job（GitHub 托管构建 → 推 ACR）+ deploy job（self-hosted runner 拉取）。
+#   ⚠️ 教训（2026-10-25）：部署步必须在 self-hosted runner 上跑——单 job 全托管会把
+#   容器起在 GitHub 的临时虚拟机里，用完即毁，目标服务器上什么都没有。
+#   多模块 Java / 多镜像并行项目请用 deploy-template.yml（pre-build + matrix）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: Target deployment environment / self-hosted runner label
+        required: true
+        default: aliyun
+        type: choice
+        options:
+          - aliyun
+          - wsl
+      deploy_ref:
+        description: Branch/ref to build and deploy
+        required: false
+        default: main
+        type: string
+
+env:
+  ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
+  ALIYUN_ACR_USERNAME: ${{ vars.ALIYUN_ACR_USERNAME }}
+  ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+  # ALIYUN_ACR_IMAGE_NAME 默认 wangshun_build/<repository>；项目不同可在 Variables 覆盖
+  ALIYUN_ACR_IMAGE_NAME: ${{ vars.ALIYUN_ACR_IMAGE_NAME || format('wangshun_build/{0}', github.event.repository.name) }}
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    # 构建在 GitHub 托管 runner；产物只有镜像 → ACR，无 artifact 中转（存储配额免疫）
+    name: Build and push to ACR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.deploy_ref || 'main' }}
+
+      - name: Validate required files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Dockerfile || { echo "Dockerfile not found at repo root" >&2; exit 1; }
+          if [ -f deploy/prod-services.yaml ]; then
+            echo "prod-services.yaml present (project-owned service definitions)"
+          else
+            echo "no deploy/prod-services.yaml; deploying image only"
+          fi
+
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.ALIYUN_ACR_REGISTRY }}
+          username: ${{ env.ALIYUN_ACR_USERNAME }}
+          password: ${{ env.ALIYUN_ACR_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push to ACR (SHA + latest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
+          # ACR 个人版拒绝 OCI provenance/SBOM manifest（与主模板同因）
+          docker buildx build             --provenance=false             --sbom=false             --tag "$IMAGE:${{ github.sha }}"             --tag "$IMAGE:latest"             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}"             --label "org.opencontainers.image.revision=${{ github.sha }}"             --push             .
+
+  deploy:
+    name: Deploy to ${{ github.event.inputs.target_env }} (self-hosted)
+    needs: build
+    runs-on: [self-hosted, "${{ github.event.inputs.target_env }}"]
+    concurrency:
+      group: atomic-${{ github.repository }}-${{ github.event.inputs.target_env }}
+      cancel-in-progress: false
+    env:
+      ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+      # 项目 secrets 按需追加，deploy/prod-services.yaml 引用的变量在此透传
+      # 例如 DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.deploy_ref || 'main' }}
+
+      - name: Deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
+          [ -n "$ALIYUN_ACR_PASSWORD" ] || { echo "Missing ALIYUN_ACR_PASSWORD" >&2; exit 1; }
+
+          DEPLOY_DIR="$HOME/deployments/$(basename '${{ github.repository }}')"
+          mkdir -p "$DEPLOY_DIR"
+
+          if [ -f deploy/prod-services.yaml ]; then
+            # 项目服务定义（引用模板导出的镜像变量）
+            {
+              echo "APP_IMAGE=$IMAGE:${{ github.sha }}"
+              env | grep -E "^(DASHBOARD_PASSWORD|GH_TOKEN|OPENCODE_API_KEY|MODAL_TOKEN_ID|MODAL_TOKEN_SECRET)=" || true
+            } > "$DEPLOY_DIR/.env"
+            cp deploy/prod-services.yaml "$DEPLOY_DIR/compose.yaml"
+          else
+            cat > "$DEPLOY_DIR/compose.yaml" <<COMPOSE
+          services:
+            app:
+              image: $IMAGE:${{ github.sha }}
+              restart: unless-stopped
+          COMPOSE
+          fi
+
+          echo "$ALIYUN_ACR_PASSWORD" | docker login "$ALIYUN_ACR_REGISTRY"             -u "$ALIYUN_ACR_USERNAME" --password-stdin
+          docker compose -f "$DEPLOY_DIR/compose.yaml" pull || true
+          docker compose -f "$DEPLOY_DIR/compose.yaml" up -d --remove-orphans
+          docker image prune -f > /dev/null 2>&1 || true
+          docker compose -f "$DEPLOY_DIR/compose.yaml" ps
