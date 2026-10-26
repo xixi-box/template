@@ -85,14 +85,15 @@ jobs:
       cancel-in-progress: false
     env:
       ALIYUN_ACR_PASSWORD: ${{ secrets.ALIYUN_ACR_PASSWORD }}
-      # 项目 secrets 按需追加，deploy/prod-services.yaml 引用的变量在此透传
+      # 复杂 compose 的项目：把 deploy/prod-services.yaml 内容放进仓库 Variable
+      # PROD_SERVICES，deploy job 就不必 checkout（见下）
+      PROD_SERVICES: ${{ vars.PROD_SERVICES }}
+      # 项目 secrets 按需追加，compose 引用的变量在此透传
       # 例如 DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.inputs.deploy_ref || 'main' }}
-
+      # ⚠️ 刻意不 checkout：国内部署机到 github.com:443 的 git 协议常不通，
+      # checkout 会卡 130s×N 次重试后失败（2026-10-25 实测）。部署只需 ACR 镜像 +
+      # 服务定义，故服务定义改由 PROD_SERVICES 变量或内联模板提供。
       - name: Deploy
         shell: bash
         run: |
@@ -103,13 +104,9 @@ jobs:
           DEPLOY_DIR="$HOME/deployments/$(basename '${{ github.repository }}')"
           mkdir -p "$DEPLOY_DIR"
 
-          if [ -f deploy/prod-services.yaml ]; then
-            # 项目服务定义（引用模板导出的镜像变量）
-            {
-              echo "APP_IMAGE=$IMAGE:${{ github.sha }}"
-              env | grep -E "^(DASHBOARD_PASSWORD|GH_TOKEN|OPENCODE_API_KEY|MODAL_TOKEN_ID|MODAL_TOKEN_SECRET)=" || true
-            } > "$DEPLOY_DIR/.env"
-            cp deploy/prod-services.yaml "$DEPLOY_DIR/compose.yaml"
+          if [ -n "${PROD_SERVICES:-}" ]; then
+            printf '%s\n' "$PROD_SERVICES" > "$DEPLOY_DIR/compose.yaml"
+            sed -i "s|\${APP_IMAGE}|$IMAGE:${{ github.sha }}|g" "$DEPLOY_DIR/compose.yaml"
           else
             cat > "$DEPLOY_DIR/compose.yaml" <<COMPOSE
           services:
