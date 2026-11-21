@@ -101,7 +101,9 @@ jobs:
           IMAGE="$ALIYUN_ACR_REGISTRY/$ALIYUN_ACR_IMAGE_NAME"
           [ -n "$ALIYUN_ACR_PASSWORD" ] || { echo "Missing ALIYUN_ACR_PASSWORD" >&2; exit 1; }
 
-          DEPLOY_DIR="$HOME/deployments/$(basename '${{ github.repository }}')"
+          PROJECT_NAME="$(basename "$GITHUB_REPOSITORY")"
+          DEPLOY_DIR="$HOME/deployments/$PROJECT_NAME"
+          export PROJECT_DATA_DIR="/data/$PROJECT_NAME-data"
           mkdir -p "$DEPLOY_DIR"
 
           if [ -n "${PROD_SERVICES:-}" ]; then

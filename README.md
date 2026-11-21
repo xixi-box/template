@@ -67,7 +67,7 @@
 
 - `ALIYUN_ACR_IMAGE_NAME`：ACR 的 `命名空间/仓库`，默认 `wangshun_build/<GitHub仓库名>`。
 - `DEPLOY_IMAGES`：多镜像清单（JSON 数组），如 `[{"name":"user","dockerfile":"Dockerfile.user"},{"name":"app","dockerfile":"Dockerfile.app"}]`；`name` 同时作为镜像 tag 前缀（`user-<sha>`）。不配置时为单镜像默认（`./Dockerfile`，tag 直接用 `<sha>`）。多模块项目在 build job 的 PROJECT PRE-BUILD 注释处插入 Maven/pnpm 预构建步骤。
-- `PROJECT_NAME`：覆盖 compose 项目名（默认取 GitHub 仓库名）。迁移已有部署栈时必须设置，否则项目级卷名改变会导致数据重新初始化。
+- `PROJECT_NAME`：覆盖 compose 项目名（默认取 GitHub 仓库名）。生产数据保存到 ${PROJECT_DATA_DIR}（默认 /data/<Compose 项目名>-data）。已有部署继续使用原 Compose 项目名。
 - `DATABASE_NAME`、`DATABASE_USERNAME`：生产数据库名称和业务账号，默认均为 `app`。
 - `APP_PORT`：应用映射到宿主机的端口，默认 `8080`。
 - `DEPLOY_DOCKERFILE`：单镜像模式 Dockerfile 路径，默认 `./Dockerfile`（多镜像模式用 `DEPLOY_IMAGES`）。
@@ -75,7 +75,8 @@
 应用服务约定（`deploy/prod-services.yaml`）：
 
 - 模板负责版本身份（SHA 标签、双推、回退、旧镜像清理）与基础设施；项目特有服务（多服务编排、Nacos、网关等）写在仓库内 `deploy/prod-services.yaml`，镜像一律引用 `${IMAGE_<NAME>}` 变量（如 `${IMAGE_USER}`），不出现 registry 地址和 tag。
-- `database` 选 `none` 时模板不启动任何基础设施，全部服务由 `deploy/prod-services.yaml` 定义（适合静态应用、或自带数据库定义需保持卷名连续的项目）。
+- `database` 选 `none` 时模板不启动任何基础设施，全部服务由 `deploy/prod-services.yaml` 定义（适合静态应用、或自带数据库定义的项目）。
+- 生产持久化卷的宿主机目录统一放在 ${PROJECT_DATA_DIR} 下。服务配置可继续使用命名卷，顶层卷用 local driver 的 bind 选项指向该目录。请在部署脚本中创建所需子目录。无持久化卷的项目不需要创建数据目录。[目录及迁移说明](DEPLOYMENT_AND_FRP_GUIDE.md)
 - 项目自有密钥在 workflow 的 deploy job `env:` 块中从 Secrets 透传，供 prod-services.yaml 插值。
 
 生产部署还需要 Secrets：`DATABASE_PASSWORD`、`DATABASE_ROOT_PASSWORD`（选择 MySQL 时必需）和 `REDIS_PASSWORD`。GHCR 镜像名自动使用 `${{ github.repository }}`，不需要额外配置账号、密码或镜像名。部署目标 `aliyun` / `wsl` 同时作为 self-hosted Runner 标签和 GitHub Environment 名称。

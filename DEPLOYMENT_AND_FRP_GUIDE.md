@@ -112,10 +112,13 @@ services:
 
 项目自有密钥不进模板也不进 compose 文件：在项目 workflow 副本的 deploy job `env:` 块里从 GitHub Secrets 透传，compose 插值时取用。
 
-两个容易踩的坑：
+### 2.2 生产数据目录
 
-1. **`database: none` 与自管数据库**。模板基础设施是给新项目的默认件。如果项目自带数据库定义（为了保持既有卷名、初始化脚本或端口），选 `none`，数据库作为普通服务写进 `prod-services.yaml`。
-2. **项目名与数据连续性**。compose 卷名是项目级作用域（`<项目名>_mysql_data`）。迁移一个已经在跑的部署栈时，必须用 `PROJECT_NAME` 变量固定旧项目名，否则换名等于换卷，MySQL 会当成首次启动重新初始化，旧数据留在原卷里不再被使用。
+生产持久化数据放在服务器的 `/data/<项目名>-data`，部署目录仍在 `$HOME/deployments/<项目名>`。矩阵模板使用 Compose 项目名，单镜像模板使用仓库名。项目自带数据库时选 `database: none`，并在 `deploy/prod-services.yaml` 中定义它的挂载；应用继续使用原来的容器内路径。
+
+新服务器由管理员先创建 `/data`，并为 self-hosted runner 准备可写的项目目录，例如 `sudo install -d -o "$(id -un)" -g "$(id -gn)" /data/example-data`（用 runner 对应的账号执行）。没有数据的服务首次部署会初始化，之后部署复用同一个目录。模板带 MySQL、PostgreSQL 或 Redis 时，子目录分别叫 `mysql-data`、`postgres-data`、`redis-data`。纯静态服务无需数据目录。
+
+已有部署一次性迁移时，先停止所有写入旧数据的容器。用 `docker inspect` 核对实际挂载，用 `docker volume inspect --format '{{.Mountpoint}}' <旧卷名>` 查找旧 Docker 卷的源目录。复制到同一磁盘上的临时目录，保留数字 UID/GID、权限和文件属性，校验完再将目录重命名到目标位置。确认新挂载和服务健康后，再清理旧来源。现有 Compose 项目名和容器内挂载路径应保持原值。
 
 ### 3. 为什么只用 Aliyun ACR
 
